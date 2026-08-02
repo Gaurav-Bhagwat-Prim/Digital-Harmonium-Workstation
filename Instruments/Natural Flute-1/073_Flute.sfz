@@ -1,0 +1,159 @@
+// Sfz exported from a sf2 file with Polyphone
+// Name      : Flute
+// Author    : Perfect Piano
+// Copyright : hi
+// Date      : 2026/07/30
+// Comment   : 
+
+<group>
+amp_veltrack=100
+ampeg_attack=0.000999942
+ampeg_hold=0.00399977
+ampeg_release=0.61805
+amplfo_delay=0.00999773
+cutoff=1250
+effect1=10
+fil_type=lpf_2p
+fil_veltrack=2400
+fileg_release=0.538033
+fillfo_delay=0.00999773
+loop_mode=loop_continuous
+pitcheg_release=0.538033
+pitchlfo_delay=0.00999773
+
+<region> sample=..\samples\Flute G3 -133.wav
+lokey=0 hikey=70
+ampeg_attack=0.0399909
+loop_end=18932
+loop_start=13912
+pitch_keycenter=67
+volume=0
+
+<region> sample=..\samples\Flute C4 -45.wav
+lokey=71 hikey=75
+ampeg_attack=0.0299935
+ampeg_decay=39.9917
+loop_end=18883
+loop_start=13222
+pitch_keycenter=72
+tune=4
+volume=0
+
+<region> sample=..\samples\Flute F4.wav
+lokey=76 hikey=80
+ampeg_attack=0.0599873
+ampeg_decay=39.9917
+loop_end=17070
+loop_start=11969
+pitch_keycenter=77
+tune=4
+volume=0
+
+<region> sample=..\samples\Flute A#4.wav
+lokey=81 hikey=85
+ampeg_attack=0.0699887
+ampeg_decay=39.9917
+loop_end=19983
+loop_start=14560
+pitch_keycenter=82
+tune=8
+volume=-1
+
+<region> sample=..\samples\Flute D#5 -82.wav
+lokey=86 hikey=90
+ampeg_attack=0.0750132
+ampeg_decay=39.9917
+loop_end=20060
+loop_start=14139
+pitch_keycenter=87
+tune=8
+volume=0
+
+<region> sample=..\samples\Flute G#5 -101.wav
+lokey=91 hikey=127
+ampeg_attack=0.0799818
+ampeg_decay=39.9917
+loop_end=18100
+loop_start=12332
+pitch_keycenter=92
+tune=8
+volume=0
+
+<group>
+lovel=64 hivel=127
+amp_veltrack=100
+ampeg_attack=0.000999942
+ampeg_release=0.851131
+amplfo_delay=0.00999773
+cutoff=4978
+fil_type=lpf_2p
+fil_veltrack=2400
+fileg_release=0.200034
+fillfo_delay=0.00999773
+loop_mode=loop_continuous
+pitcheg_release=0.200034
+pitchlfo_delay=0.00999773
+
+<region> sample=..\samples\Vibrato Wind Flute C.wav
+lokey=0 hikey=62
+cutoff=625
+loop_end=113966
+loop_start=104455
+pitch_keycenter=60
+volume=-10.4
+
+<region> sample=..\samples\Vibrato Wind Flute D.wav
+lokey=63 hikey=65
+loop_end=107110
+loop_start=76516
+pitch_keycenter=63
+volume=-10.4
+
+<region> sample=..\samples\Vibrato Wind Flute F.wav
+lokey=66 hikey=68
+loop_end=112343
+loop_start=93830
+pitch_keycenter=66
+volume=-10.4
+
+<region> sample=..\samples\Vibrato Wind Flute A.wav
+lokey=69 hikey=71
+loop_end=114273
+loop_start=86096
+pitch_keycenter=69
+volume=-13
+
+<region> sample=..\samples\Vibrato Wind Flute C-1.wav
+lokey=72 hikey=75
+loop_end=114127
+loop_start=103416
+pitch_keycenter=72
+volume=-13
+
+<region> sample=..\samples\Vibrato Wind Flute F-1.wav
+lokey=76 hikey=79
+loop_end=114565
+loop_start=66589
+pitch_keycenter=78
+volume=-10.4
+
+<region> sample=..\samples\Vibrato Wind Flute A-1.wav
+lokey=80 hikey=83
+loop_end=113810
+loop_start=94383
+pitch_keycenter=81
+volume=-10.4
+
+<region> sample=..\samples\Vibrato Wind Flute C-2.wav
+lokey=84 hikey=87
+loop_end=105694
+loop_start=75886
+pitch_keycenter=84
+volume=-10.4
+
+<region> sample=..\samples\Vibrato Wind Flute F-2.wav
+lokey=88 hikey=127
+loop_end=113890
+loop_start=94716
+pitch_keycenter=90
+volume=-10.4

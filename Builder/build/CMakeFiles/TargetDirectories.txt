@@ -1,0 +1,10 @@
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/vhl_builder.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/vhl_tools.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/vhl_workbench.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/vhl_reader.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/edit_cache.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/rebuild_cache.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/list_install_components.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/install.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/install/local.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/Builder/build/CMakeFiles/install/strip.dir
