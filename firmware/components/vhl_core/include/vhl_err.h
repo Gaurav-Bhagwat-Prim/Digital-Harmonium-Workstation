@@ -1,7 +1,7 @@
 /* =============================================================================
  * vhl_err.h — Unified System Error Code Architecture
  * Project: Digital Harmonium Workstation Firmware
- * Stage 1 — System Skeleton
+ * Stage 1 & 2 — System Core Architecture
  * ============================================================================= */
 
 #ifndef VHL_ERR_H
@@ -24,6 +24,7 @@ typedef int32_t vhl_err_t;
 #define VHL_ERR_NOT_FOUND           (-5)
 #define VHL_ERR_NOT_SUPPORTED       (-6)
 #define VHL_ERR_BUSY                (-7)
+#define VHL_ERR_INVALID_STATE       (-8)
 
 /* Storage & VHL Format Errors (-100 to -199) */
 #define VHL_ERR_VHL_INVALID_MAGIC   (-100)

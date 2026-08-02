@@ -92,18 +92,77 @@ build components/vhl_core/rebuild_cache: phony components/vhl_core/CMakeFiles/re
 # =============================================================================
 
 # =============================================================================
+# Object build statements for STATIC_LIBRARY target vhl_runtime
+
+
+#############################################
+# Order-only phony target for vhl_runtime
+
+build cmake_object_order_depends_target_vhl_runtime: phony || .
+
+build components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj: C_COMPILER__vhl_runtime_unscanned_ D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_runtime/system_manager.c || cmake_object_order_depends_target_vhl_runtime
+  DEP_FILE = components\vhl_runtime\CMakeFiles\vhl_runtime.dir\system_manager.c.obj.d
+  FLAGS = -std=gnu11 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter
+  INCLUDES = -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_runtime/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_hal/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_runtime/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_audio/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_input/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_feature/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_storage/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_ui/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_diagnostic/include"
+  OBJECT_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
+  OBJECT_FILE_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
+
+
+# =============================================================================
+# Link build statements for STATIC_LIBRARY target vhl_runtime
+
+
+#############################################
+# Link the static library components\vhl_runtime\libvhl_runtime.a
+
+build components/vhl_runtime/libvhl_runtime.a: C_STATIC_LIBRARY_LINKER__vhl_runtime_ components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj
+  OBJECT_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_FILE = components\vhl_runtime\libvhl_runtime.a
+  TARGET_PDB = vhl_runtime.a.dbg
+
+
+#############################################
+# Utility command for edit_cache
+
+build components/vhl_runtime/CMakeFiles/edit_cache.util: CUSTOM_COMMAND
+  COMMAND = C:\Windows\system32\cmd.exe /C "cd /D "D:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\firmware\build\components\vhl_runtime" && C:\Strawberry\c\bin\cmake.exe -E echo "No interactive CMake dialog available.""
+  DESC = No interactive CMake dialog available...
+  restat = 1
+
+build components/vhl_runtime/edit_cache: phony components/vhl_runtime/CMakeFiles/edit_cache.util
+
+
+#############################################
+# Utility command for rebuild_cache
+
+build components/vhl_runtime/CMakeFiles/rebuild_cache.util: CUSTOM_COMMAND
+  COMMAND = C:\Windows\system32\cmd.exe /C "cd /D "D:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\firmware\build\components\vhl_runtime" && C:\Strawberry\c\bin\cmake.exe --regenerate-during-build -S"D:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\firmware" -B"D:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\firmware\build""
+  DESC = Running CMake to regenerate build system...
+  pool = console
+  restat = 1
+
+build components/vhl_runtime/rebuild_cache: phony components/vhl_runtime/CMakeFiles/rebuild_cache.util
+
+# =============================================================================
+# Write statements declared in CMakeLists.txt:
+# D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/CMakeLists.txt
+# =============================================================================
+
+# =============================================================================
 # Object build statements for EXECUTABLE target digital_harmonium_firmware
 
 
 #############################################
 # Order-only phony target for digital_harmonium_firmware
 
-build cmake_object_order_depends_target_digital_harmonium_firmware: phony || .
+build cmake_object_order_depends_target_digital_harmonium_firmware: phony || cmake_object_order_depends_target_vhl_runtime
 
 build main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj: C_COMPILER__digital_harmonium_firmware_unscanned_ D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/main/main.c || cmake_object_order_depends_target_digital_harmonium_firmware
   DEP_FILE = main\CMakeFiles\digital_harmonium_firmware.dir\main.c.obj.d
   FLAGS = -std=gnu11 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter
-  INCLUDES = -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_hal/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_runtime/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_audio/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_input/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_feature/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_storage/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_ui/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_diagnostic/include"
+  INCLUDES = -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_hal/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_runtime/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_audio/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_input/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_feature/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_storage/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_ui/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_diagnostic/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_runtime/include"
   OBJECT_DIR = main\CMakeFiles\digital_harmonium_firmware.dir
   OBJECT_FILE_DIR = main\CMakeFiles\digital_harmonium_firmware.dir
 
@@ -115,8 +174,8 @@ build main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj: C_COMPILER__dig
 #############################################
 # Link the executable main\digital_harmonium_firmware.exe
 
-build main/digital_harmonium_firmware.exe: C_EXECUTABLE_LINKER__digital_harmonium_firmware_ main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj
-  LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+build main/digital_harmonium_firmware.exe: C_EXECUTABLE_LINKER__digital_harmonium_firmware_ main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj | components/vhl_runtime/libvhl_runtime.a || components/vhl_runtime/libvhl_runtime.a
+  LINK_LIBRARIES = components/vhl_runtime/libvhl_runtime.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = main\CMakeFiles\digital_harmonium_firmware.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
@@ -154,6 +213,10 @@ build digital_harmonium_firmware: phony main/digital_harmonium_firmware.exe
 
 build digital_harmonium_firmware.exe: phony main/digital_harmonium_firmware.exe
 
+build libvhl_runtime.a: phony components/vhl_runtime/libvhl_runtime.a
+
+build vhl_runtime: phony components/vhl_runtime/libvhl_runtime.a
+
 # =============================================================================
 # Folder targets.
 
@@ -162,7 +225,7 @@ build digital_harmonium_firmware.exe: phony main/digital_harmonium_firmware.exe
 #############################################
 # Folder: D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build
 
-build all: phony components/vhl_core/all main/all
+build all: phony components/vhl_core/all components/vhl_runtime/all main/all
 
 # =============================================================================
 
@@ -170,6 +233,13 @@ build all: phony components/vhl_core/all main/all
 # Folder: D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_core
 
 build components/vhl_core/all: phony
+
+# =============================================================================
+
+#############################################
+# Folder: D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_runtime
+
+build components/vhl_runtime/all: phony components/vhl_runtime/libvhl_runtime.a
 
 # =============================================================================
 
@@ -185,14 +255,14 @@ build main/all: phony main/digital_harmonium_firmware.exe
 #############################################
 # Re-run CMake if any of its inputs changed.
 
-build build.ninja: RERUN_CMAKE | C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCommonLanguageInclude.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeGenericSystem.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeInitializeConfigs.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeLanguageInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeRCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInitialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C-ABI.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-Initialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-windres.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/3.29.2/CMakeCCompiler.cmake CMakeFiles/3.29.2/CMakeRCCompiler.cmake CMakeFiles/3.29.2/CMakeSystem.cmake D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_core/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/main/CMakeLists.txt
+build build.ninja: RERUN_CMAKE | C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCommonLanguageInclude.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeGenericSystem.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeInitializeConfigs.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeLanguageInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeRCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInitialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C-ABI.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-Initialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-windres.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/3.29.2/CMakeCCompiler.cmake CMakeFiles/3.29.2/CMakeRCCompiler.cmake CMakeFiles/3.29.2/CMakeSystem.cmake D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_core/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_runtime/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/main/CMakeLists.txt
   pool = console
 
 
 #############################################
 # A missing CMake input file is not an error.
 
-build C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCommonLanguageInclude.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeGenericSystem.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeInitializeConfigs.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeLanguageInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeRCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInitialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C-ABI.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-Initialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-windres.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/3.29.2/CMakeCCompiler.cmake CMakeFiles/3.29.2/CMakeRCCompiler.cmake CMakeFiles/3.29.2/CMakeSystem.cmake D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_core/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/main/CMakeLists.txt: phony
+build C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeCommonLanguageInclude.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeGenericSystem.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeInitializeConfigs.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeLanguageInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeRCInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInformation.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/CMakeSystemSpecificInitialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Compiler/GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C-ABI.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU-C.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-GNU.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-Initialize.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows-windres.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/Windows.cmake C$:/Strawberry/c/share/cmake-3.29/Modules/Platform/WindowsPaths.cmake CMakeCache.txt CMakeFiles/3.29.2/CMakeCCompiler.cmake CMakeFiles/3.29.2/CMakeRCCompiler.cmake CMakeFiles/3.29.2/CMakeSystem.cmake D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_core/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_runtime/CMakeLists.txt D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/main/CMakeLists.txt: phony
 
 
 #############################################

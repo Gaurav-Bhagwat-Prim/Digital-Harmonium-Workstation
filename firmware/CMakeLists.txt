@@ -1,7 +1,7 @@
 # ==============================================================================
 # firmware/CMakeLists.txt — Master Build Configuration
 # Project: Digital Harmonium Workstation Firmware
-# Stage 1 — System Skeleton
+# Stage 2 — System Runtime Engine
 # ==============================================================================
 cmake_minimum_required(VERSION 3.16)
 
@@ -29,5 +29,6 @@ else()
     endif()
 
     add_subdirectory(components/vhl_core)
+    add_subdirectory(components/vhl_runtime)
     add_subdirectory(main)
 endif()

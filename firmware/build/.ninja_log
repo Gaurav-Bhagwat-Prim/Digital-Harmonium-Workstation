@@ -1,4 +1,6 @@
 # ninja log v6
-41	176	8073674874824465	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	9a2a60ee692e5f87
-41	120	8073675280481721	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	7ebb147914564bd2
+179	530	8073685439015257	components/vhl_runtime/libvhl_runtime.a	7bc1e0a79306588a
+74	179	8073685437939977	components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj	221347cafeb56fd9
 120	207	8073675281294633	main/digital_harmonium_firmware.exe	4785a873d9d74095
+80	161	8073685437989596	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	5c2a2627f256c9ea
+50	138	8073685753958773	main/digital_harmonium_firmware.exe	ab4f24b5aebb1f5c
