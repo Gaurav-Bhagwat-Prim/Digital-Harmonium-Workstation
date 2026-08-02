@@ -1,11 +1,18 @@
 # ninja log v6
-80	161	8073685437989596	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	5c2a2627f256c9ea
-50	138	8073685753958773	main/digital_harmonium_firmware.exe	ab4f24b5aebb1f5c
-74	179	8073685437939977	components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj	221347cafeb56fd9
-179	530	8073685439015257	components/vhl_runtime/libvhl_runtime.a	7bc1e0a79306588a
+55	150	8073696681216982	components/vhl_runtime/CMakeFiles/vhl_runtime.dir/event_bus.c.obj	9d8e678c6c466421
+63	149	8073696681268517	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	5c2a2627f256c9ea
 35	119	8073690745196751	components/vhl_runtime/CMakeFiles/vhl_runtime.dir/task_manager.c.obj	e3efb459c6049c64
-42	125	8073690745257705	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	5c2a2627f256c9ea
-119	206	8073690746040386	components/vhl_runtime/libvhl_runtime.a	e9c37d635e74cef1
-206	291	8073690746914621	main/digital_harmonium_firmware.exe	ab4f24b5aebb1f5c
-28	111	8073691106339878	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	5c2a2627f256c9ea
-111	193	8073691107203397	main/digital_harmonium_firmware.exe	ab4f24b5aebb1f5c
+234	316	8073696682988988	main/digital_harmonium_firmware.exe	ab4f24b5aebb1f5c
+74	179	8073685437939977	components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj	221347cafeb56fd9
+150	234	8073696682175212	components/vhl_runtime/libvhl_runtime.a	11eb5410a9c3c239
+75	153	8073700424117500	components/vhl_runtime/CMakeFiles/vhl_runtime.dir/task_manager.c.obj	e3efb459c6049c64
+81	168	8073700424177121	components/vhl_runtime/CMakeFiles/vhl_runtime.dir/event_bus.c.obj	9d8e678c6c466421
+86	175	8073700424229849	components/vhl_input/CMakeFiles/vhl_input.dir/button_manager.c.obj	63b57d798aedf402
+92	181	8073700424301537	components/vhl_input/CMakeFiles/vhl_input.dir/slider_filter.c.obj	be52cf1fe1bcf917
+46	124	8073700601630119	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	789169a85e8cf0d0
+29	128	8073700601508041	components/vhl_runtime/libvhl_runtime.a	11eb5410a9c3c239
+128	213	8073700602456122	components/vhl_input/libvhl_input.a	e503798375b846ba
+214	303	8073700603310443	main/digital_harmonium_firmware.exe	c5ad429589f3acc9
+16	84	8073700988101665	components/vhl_input/CMakeFiles/vhl_input.dir/slider_filter.c.obj	be52cf1fe1bcf917
+85	181	8073700988790806	components/vhl_input/libvhl_input.a	e503798375b846ba
+181	276	8073700989757315	main/digital_harmonium_firmware.exe	c5ad429589f3acc9

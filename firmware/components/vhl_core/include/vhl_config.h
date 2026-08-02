@@ -1,7 +1,7 @@
 /* =============================================================================
  * vhl_config.h — Global System Configuration & Hardware Map
  * Project: Digital Harmonium Workstation Firmware
- * Stage 1 — System Skeleton
+ * Stage 1 to 5 — System Core Architecture
  * ============================================================================= */
 
 #ifndef VHL_CONFIG_H
@@ -19,6 +19,22 @@ extern "C" {
 #define VHL_DMA_BUFFER_FRAMES    (512U)
 #define VHL_DMA_BUFFER_COUNT     (2U)
 #define VHL_MAX_POLYPHONY        (16U)
+
+/* -----------------------------------------------------------------------------
+ * Input Scanning & Debouncing Parameters
+ * ----------------------------------------------------------------------------- */
+
+#define VHL_INPUT_DEBOUNCE_SAMPLES     (4U)    /* 4-bit shift register integrator */
+#define VHL_INPUT_SCAN_INTERVAL_MS     (2.5f)  /* 2.5 ms scan period (10 ms debounce window) */
+#define VHL_KEYBOARD_MATRIX_ROWS       (5U)    /* 5 Matrix Rows */
+#define VHL_KEYBOARD_MATRIX_COLS       (8U)    /* 8 Matrix Columns (Up to 40 keys) */
+
+/* -----------------------------------------------------------------------------
+ * Analog Slider Filtering Parameters
+ * ----------------------------------------------------------------------------- */
+
+#define VHL_SLIDER_EMA_ALPHA           (0.20f) /* EMA smoothing coefficient (0.0 to 1.0) */
+#define VHL_SLIDER_HYSTERESIS_LSB      (2U)    /* 2-LSB deadband noise guard */
 
 /* -----------------------------------------------------------------------------
  * FreeRTOS Task Priorities (0 to 7 Scale, 7 = Highest)
