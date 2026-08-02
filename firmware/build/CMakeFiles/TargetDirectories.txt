@@ -11,6 +11,9 @@ D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/
 D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_input/CMakeFiles/vhl_input.dir
 D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_input/CMakeFiles/edit_cache.dir
 D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_input/CMakeFiles/rebuild_cache.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_audio/CMakeFiles/vhl_audio.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_audio/CMakeFiles/edit_cache.dir
+D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/components/vhl_audio/CMakeFiles/rebuild_cache.dir
 D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/main/CMakeFiles/digital_harmonium_firmware.dir
 D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/main/CMakeFiles/edit_cache.dir
 D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/build/main/CMakeFiles/rebuild_cache.dir
