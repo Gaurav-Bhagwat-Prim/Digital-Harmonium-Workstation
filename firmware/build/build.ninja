@@ -107,6 +107,13 @@ build components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj: C_
   OBJECT_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
   OBJECT_FILE_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
 
+build components/vhl_runtime/CMakeFiles/vhl_runtime.dir/task_manager.c.obj: C_COMPILER__vhl_runtime_unscanned_ D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_runtime/task_manager.c || cmake_object_order_depends_target_vhl_runtime
+  DEP_FILE = components\vhl_runtime\CMakeFiles\vhl_runtime.dir\task_manager.c.obj.d
+  FLAGS = -std=gnu11 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter
+  INCLUDES = -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_runtime/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_hal/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_runtime/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_audio/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_input/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_feature/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_storage/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_ui/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_diagnostic/include"
+  OBJECT_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
+  OBJECT_FILE_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target vhl_runtime
@@ -115,7 +122,7 @@ build components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj: C_
 #############################################
 # Link the static library components\vhl_runtime\libvhl_runtime.a
 
-build components/vhl_runtime/libvhl_runtime.a: C_STATIC_LIBRARY_LINKER__vhl_runtime_ components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj
+build components/vhl_runtime/libvhl_runtime.a: C_STATIC_LIBRARY_LINKER__vhl_runtime_ components/vhl_runtime/CMakeFiles/vhl_runtime.dir/system_manager.c.obj components/vhl_runtime/CMakeFiles/vhl_runtime.dir/task_manager.c.obj
   OBJECT_DIR = components\vhl_runtime\CMakeFiles\vhl_runtime.dir
   POST_BUILD = cd .
   PRE_LINK = cd .

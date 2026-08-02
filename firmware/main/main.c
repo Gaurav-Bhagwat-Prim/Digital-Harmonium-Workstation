@@ -1,7 +1,7 @@
 /* =============================================================================
- * main.c — System Entry Point & Stage 2 Unit Test Harness
+ * main.c — System Entry Point & Stage 3 Task Architecture Unit Test Harness
  * Project: Digital Harmonium Workstation Firmware
- * Stage 2 — System Runtime Engine & Global State Machine
+ * Stage 3 — FreeRTOS Task Architecture & Dual-Core Affinity
  * ============================================================================= */
 
 #include <stdio.h>
@@ -10,92 +10,77 @@
 #include "vhl_config.h"
 #include "vhl_err.h"
 #include "system_manager.h"
-
-static uint32_t s_callback_fire_count = 0;
-
-static void test_observer_cb(vhl_system_state_t oldState, vhl_system_state_t newState, vhl_module_id_t sourceModule)
-{
-    s_callback_fire_count++;
-}
+#include "task_manager.h"
 
 int main(void)
 {
     printf("=============================================================\n");
-    printf("Digital Harmonium Workstation — Stage 2 Runtime State Test\n");
+    printf("Digital Harmonium Workstation — Stage 3 Task Engine Test\n");
     printf("=============================================================\n");
 
-    // Test 1: System Initialization
+    // Initialize System Runtime & Task Engine
     vhl_err_t err = vhl_system_init();
     assert(err == VHL_OK);
-    assert(vhl_system_get_state() == SYSTEM_STATE_BOOT);
-    printf("[TEST 1 PASS] SystemInit initialized state to BOOT cleanly.\n");
 
-    // Test 2: Callback Registration
-    err = vhl_system_register_state_callback(test_observer_cb);
+    err = vhl_tasks_init();
     assert(err == VHL_OK);
+    printf("[TEST 1 PASS] Tasks Engine & Static Memory initialized cleanly.\n");
 
-    // Test 3: Valid State Transition Sequence
-    // BOOT -> IDLE (by MODULE_ID_SYSTEM)
-    err = vhl_system_request_state_change(SYSTEM_STATE_IDLE, MODULE_ID_SYSTEM, VHL_OK);
+    // Test 2: Dual-Core Affinity Verification
+    // AudioTask MUST be pinned to Core 1 (Priority 7)
+    assert(vhl_task_get_core_affinity(VHL_TASK_ID_AUDIO) == 1);
+    
+    vhl_task_info_t audioInfo;
+    err = vhl_task_get_info(VHL_TASK_ID_AUDIO, &audioInfo);
     assert(err == VHL_OK);
-    assert(vhl_system_get_state() == SYSTEM_STATE_IDLE);
-    assert(s_callback_fire_count == 1);
+    assert(audioInfo.coreId == 1);
+    assert(audioInfo.priority == VHL_TASK_PRIO_AUDIO);
+    assert(audioInfo.stackSizeBytes == VHL_STACK_SIZE_AUDIO);
 
-    // IDLE -> PERFORMING (by MODULE_ID_INPUT)
-    err = vhl_system_request_state_change(SYSTEM_STATE_PERFORMING, MODULE_ID_INPUT, VHL_OK);
-    assert(err == VHL_OK);
-    assert(vhl_system_get_state() == SYSTEM_STATE_PERFORMING);
-    assert(s_callback_fire_count == 2);
+    // All background tasks MUST be pinned to Core 0
+    assert(vhl_task_get_core_affinity(VHL_TASK_ID_INPUT) == 0);
+    assert(vhl_task_get_core_affinity(VHL_TASK_ID_UI) == 0);
+    assert(vhl_task_get_core_affinity(VHL_TASK_ID_LOADER) == 0);
+    assert(vhl_task_get_core_affinity(VHL_TASK_ID_STORAGE) == 0);
+    assert(vhl_task_get_core_affinity(VHL_TASK_ID_DIAG) == 0);
 
-    // PERFORMING -> LOADING_INST (by MODULE_ID_UI)
-    err = vhl_system_request_state_change(SYSTEM_STATE_LOADING_INST, MODULE_ID_UI, VHL_OK);
-    assert(err == VHL_OK);
-    assert(vhl_system_get_state() == SYSTEM_STATE_LOADING_INST);
-    assert(s_callback_fire_count == 3);
+    printf("[TEST 2 PASS] Core 1 Affinity pinned exclusively to TASK_AUDIO; Core 0 pinned to all background tasks.\n");
 
-    printf("[TEST 2 & 3 PASS] Single Authority state transition requests & callbacks verified.\n");
+    // Test 3: Static Stack Reservations Audit
+    size_t totalStackBytes = 0;
+    for (int i = 0; i < VHL_TASK_MAX_TASKS; ++i) {
+        vhl_task_info_t info;
+        vhl_task_get_info(i, &info);
+        totalStackBytes += info.stackSizeBytes;
+        assert(info.stackHighWaterMarkBytes > 0);
+        assert(info.stackHighWaterMarkBytes <= info.stackSizeBytes);
+    }
+    assert(totalStackBytes == 30720);
+    printf("[TEST 3 PASS] Static Stack Allocation audited cleanly (30,720 Bytes total static stack memory reserved).\n");
 
-    // Test 4: Forbidden Transition Matrix Enforcement
-    // LOADING_INST -> PERFORMING is strictly forbidden!
-    err = vhl_system_request_state_change(SYSTEM_STATE_PERFORMING, MODULE_ID_AUDIO, VHL_ERR_FAIL);
-    assert(err == VHL_ERR_INVALID_STATE);
-    assert(vhl_system_get_state() == SYSTEM_STATE_LOADING_INST); // State unchanged
-    printf("[TEST 4 PASS] Forbidden transition (LOADING -> PERFORMING) rejected with VHL_ERR_INVALID_STATE.\n");
-
-    // Complete loading: LOADING_INST -> IDLE
-    err = vhl_system_request_state_change(SYSTEM_STATE_IDLE, MODULE_ID_LOADER, VHL_OK);
-    assert(err == VHL_OK);
-
-    // Test 5: Feature Flag Independent Operation
-    assert(!vhl_system_is_feature_active(FEATURE_FLAG_RECORDING));
-    vhl_system_enable_feature(FEATURE_FLAG_RECORDING);
-    vhl_system_enable_feature(FEATURE_FLAG_TABLA);
-    assert(vhl_system_is_feature_active(FEATURE_FLAG_RECORDING));
-    assert(vhl_system_is_feature_active(FEATURE_FLAG_TABLA));
-    assert(!vhl_system_is_feature_active(FEATURE_FLAG_TANPURA));
-    vhl_system_disable_feature(FEATURE_FLAG_RECORDING);
-    assert(!vhl_system_is_feature_active(FEATURE_FLAG_RECORDING));
-    printf("[TEST 5 PASS] Subsystem feature flags toggled independently of global state.\n");
-
-    // Test 6: 1,000 Rapid Transitions & Circular Ring Buffer Verification
-    for (int i = 0; i < 1000; ++i) {
-        vhl_system_request_state_change(SYSTEM_STATE_PERFORMING, MODULE_ID_INPUT, VHL_OK);
-        vhl_system_request_state_change(SYSTEM_STATE_IDLE, MODULE_ID_AUDIO, VHL_OK);
+    // Test 4: Task Watchdog & Heartbeat Policy Verification
+    // Publish heartbeats for all tasks @ timestamp = 100 ms
+    for (int i = 0; i < VHL_TASK_MAX_TASKS; ++i) {
+        err = vhl_task_send_heartbeat(i, 100);
+        assert(err == VHL_OK);
     }
 
-    uint32_t totalTransitions = vhl_system_get_transition_count();
-    assert(totalTransitions > 2000);
+    // Audit heartbeats @ timestamp = 150 ms (No stalls expected)
+    err = vhl_task_audit_heartbeats(150);
+    assert(err == VHL_OK);
 
-    vhl_state_transition_log_t history[32];
-    size_t historyCount = vhl_system_get_transition_history(history, 32);
-    assert(historyCount == 32);
-    assert(history[0].transitionId == totalTransitions);
-    assert(history[0].newState == SYSTEM_STATE_IDLE);
+    // Audit heartbeats @ timestamp = 300 ms (AudioTask timeout is 100 ms -> should detect stall)
+    err = vhl_task_audit_heartbeats(300);
+    assert(err == VHL_ERR_TIMEOUT);
 
-    printf("[TEST 6 PASS] 1,000 rapid state transitions executed cleanly. Total counter: %u, Ring Log verified.\n", totalTransitions);
+    vhl_task_info_t stalledAudioInfo;
+    vhl_task_get_info(VHL_TASK_ID_AUDIO, &stalledAudioInfo);
+    assert(stalledAudioInfo.isStalled == true);
+
+    printf("[TEST 4 PASS] Heartbeat publishing & Task stall detection verified cleanly.\n");
 
     printf("=============================================================\n");
-    printf("Stage 2 Acceptance Gate Passed 100%% Cleanly.\n");
+    printf("Stage 3 Acceptance Gate Passed 100%% Cleanly.\n");
     printf("=============================================================\n");
     return 0;
 }
