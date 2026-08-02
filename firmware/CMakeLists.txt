@@ -1,7 +1,7 @@
 # ==============================================================================
 # firmware/CMakeLists.txt — Master Build Configuration
 # Project: Digital Harmonium Workstation Firmware
-# Stage 5 — Input Layer Architecture
+# Stage 6 — Audio HAL Architecture
 # ==============================================================================
 cmake_minimum_required(VERSION 3.16)
 
@@ -29,6 +29,7 @@ else()
     endif()
 
     add_subdirectory(components/vhl_core)
+    add_subdirectory(components/vhl_hal)
     add_subdirectory(components/vhl_runtime)
     add_subdirectory(components/vhl_input)
     add_subdirectory(main)
