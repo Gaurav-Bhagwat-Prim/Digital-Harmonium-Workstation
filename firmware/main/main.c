@@ -1,7 +1,7 @@
 /* =============================================================================
- * main.c — System Entry Point & Stage 7 Single Voice Synthesis Unit Test Harness
+ * main.c — System Entry Point & Stage 8 Polyphonic Synthesizer Unit Test Harness
  * Project: Digital Harmonium Workstation Firmware
- * Stage 7 — Single Voice Audio Synthesis Engine
+ * Stage 8 — 16-Voice Polyphonic Synthesizer & ADSR Envelope Generator
  * ============================================================================= */
 
 #include <stdio.h>
@@ -12,96 +12,113 @@
 #include "vhl_err.h"
 #include "system_manager.h"
 #include "sample_engine.h"
+#include "adsr_envelope.h"
+#include "poly_synth.h"
 
-// Simulated Flash Memory-Mapped PCM 440 Hz Harmonium Sample (1,000 frames)
-static vhl_pcm16_t s_flash_pcm_sample[1000];
+static vhl_pcm16_t s_harmonium_pcm_sample[1000];
 
-static void generate_test_pcm_sample(void)
+static void generate_test_harmonium_sample(void)
 {
     float phaseInc = (2.0f * 3.14159265f * 440.0f) / 44100.0f;
     for (int i = 0; i < 1000; ++i) {
         float sample = sinf((float)i * phaseInc);
-        s_flash_pcm_sample[i] = (vhl_pcm16_t)(sample * 30000.0f);
+        s_harmonium_pcm_sample[i] = (vhl_pcm16_t)(sample * 30000.0f);
     }
 }
 
 int main(void)
 {
     printf("=============================================================\n");
-    printf("Digital Harmonium Workstation — Stage 7 Single Voice Test\n");
+    printf("Digital Harmonium Workstation — Stage 8 Polyphonic Synth Test\n");
     printf("=============================================================\n");
 
-    generate_test_pcm_sample();
+    generate_test_harmonium_sample();
 
-    // Initialize System Runtime & Single Voice Engine
+    // Initialize System Runtime & Polyphonic Synthesizer Engine
     vhl_err_t err = vhl_system_init();
     assert(err == VHL_OK);
 
-    vhl_single_voice_t voice;
-    err = vhl_single_voice_init(&voice);
+    vhl_poly_synth_t synth;
+    err = vhl_poly_synth_init(&synth);
     assert(err == VHL_OK);
-    assert(vhl_single_voice_get_state(&voice) == VHL_VOICE_STATE_STOPPED);
+    assert(synth.activeVoiceCount == 0);
+    assert(synth.masterVolume == 0.8f);
 
-    printf("[TEST 1 PASS] Single Voice Engine initialized cleanly in STOPPED state.\n");
+    printf("[TEST 1 PASS] 16-Voice Polyphonic Synthesizer initialized cleanly.\n");
 
-    // Test 2: Memory-Mapped Flash PCM Sample Binding
-    err = vhl_single_voice_bind_sample(&voice, s_flash_pcm_sample, 1000, 100, 900, true, 60); // RootKey C4 (60)
+    // Test 2: Instrument-Driven ADSR Parameter Configuration
+    vhl_instrument_params_t instParams = {
+        .attackMs = 15.0f,
+        .decayMs = 80.0f,
+        .sustainLevel = 0.7f,
+        .releaseMs = 150.0f,
+        .masterGain = 0.9f
+    };
+    err = vhl_poly_synth_set_instrument_params(&synth, &instParams);
     assert(err == VHL_OK);
-    assert(voice.totalFrames == 1000);
-    assert(voice.rootKey == 60);
+    assert(synth.currentInstParams.attackMs == 15.0f);
+    assert(synth.currentInstParams.sustainLevel == 0.7f);
 
-    printf("[TEST 2 PASS] Memory-mapped Flash PCM sample bound cleanly.\n");
+    printf("[TEST 2 PASS] VHL Instrument-Driven ADSR envelope parameters configured cleanly.\n");
 
-    // Test 3: Note-On Event & Voice State Machine Transitions (STOPPED -> STARTING -> PLAYING)
-    err = vhl_single_voice_note_on(&voice, 60, 127); // Note C4 (PitchRatio = 1.0)
+    // Test 3: Sample Binding to 16 Voices & Extensible Struct Pointer Audit
+    err = vhl_poly_synth_bind_sample(&synth, s_harmonium_pcm_sample, 1000, 100, 900, true, 60);
     assert(err == VHL_OK);
-    assert(vhl_single_voice_get_state(&voice) == VHL_VOICE_STATE_PLAYING);
-    assert(fabsf(voice.pitchRatio - 1.0f) < 0.001f);
 
-    printf("[TEST 3 PASS] Note-On triggered state transition to PLAYING (PitchRatio = 1.000).\n");
+    for (size_t i = 0; i < VHL_MAX_POLYPHONY; ++i) {
+        assert(synth.voices[i].voiceEngine.pSampleData == s_harmonium_pcm_sample);
+        // Assert reserved extensible slots are NULL (ready for Stage 9 biquad filter & LFOs)
+        assert(synth.voices[i].pFilterState == NULL);
+        assert(synth.voices[i].pModulationState == NULL);
+        assert(synth.voices[i].pLayerState == NULL);
+    }
 
-    // Test 4: Sub-Cent Pitch Transposition Math Verification
-    // Trigger Note C5 (72) -> 1 octave higher (PitchRatio = 2.0)
-    vhl_single_voice_note_on(&voice, 72, 100);
-    assert(fabsf(voice.pitchRatio - 2.0f) < 0.001f);
+    printf("[TEST 3 PASS] Sample bound to all 16 voices & reserved extension slots audited cleanly.\n");
 
-    // Trigger Note C3 (48) -> 1 octave lower (PitchRatio = 0.5)
-    vhl_single_voice_note_on(&voice, 48, 100);
-    assert(fabsf(voice.pitchRatio - 0.5f) < 0.001f);
+    // Test 4: 3-Note Chord Harmony Rendering (C4, E4, G4 -> Notes 60, 64, 67)
+    err = vhl_poly_synth_note_on(&synth, 60, 127); assert(err == VHL_OK);
+    err = vhl_poly_synth_note_on(&synth, 64, 127); assert(err == VHL_OK);
+    err = vhl_poly_synth_note_on(&synth, 67, 127); assert(err == VHL_OK);
 
-    printf("[TEST 4 PASS] Pitch Transposition ratio calculation verified (+12 semitones = 2.0x, -12 semitones = 0.5x).\n");
-
-    // Test 5: Audio Buffer Rendering with Cubic Hermite Interpolation & Loop Wrapping
-    vhl_single_voice_note_on(&voice, 60, 127);
     vhl_sample_t leftBuf[512] = {0};
     vhl_sample_t rightBuf[512] = {0};
-    vhl_audio_buffer_t renderBuf = {
-        .left = leftBuf,
-        .right = rightBuf,
-        .frameCount = 512
-    };
+    vhl_audio_buffer_t outBuf = { .left = leftBuf, .right = rightBuf, .frameCount = 512 };
 
-    // Render 512 frames (Pass 1)
-    err = vhl_single_voice_render(&voice, &renderBuf, 512);
+    err = vhl_poly_synth_render(&synth, &outBuf, 512);
     assert(err == VHL_OK);
-    assert(voice.phase > 0.0);
+    assert(synth.activeVoiceCount == 3);
+    assert(outBuf.left[256] != 0.0f);
 
-    // Render 500 more frames (Pass 2, should cross loopEnd 900 -> wrap to loopStart 100)
-    err = vhl_single_voice_render(&voice, &renderBuf, 500);
+    printf("[TEST 4 PASS] 3-Note Polyphonic Chord (C-E-G) rendered cleanly into stereo float mixer.\n");
+
+    // Test 5: LRU & Quietest Voice Stealing Engine (Trigger 24 simultaneous Note-Ons)
+    for (uint8_t note = 48; note < 72; ++note) { // 24 notes
+        err = vhl_poly_synth_note_on(&synth, note, 100);
+        assert(err == VHL_OK);
+    }
+
+    // Verify 16-voice hard limit is maintained gracefully
+    err = vhl_poly_synth_render(&synth, &outBuf, 512);
     assert(err == VHL_OK);
-    assert(voice.phase >= 100.0 && voice.phase < 900.0);
+    assert(synth.activeVoiceCount <= VHL_MAX_POLYPHONY);
 
-    printf("[TEST 5 PASS] Rendered 1,012 frames cleanly with Cubic Hermite interpolation & seamless loop wrapping.\n");
+    printf("[TEST 5 PASS] LRU Voice Stealing Engine handled 24 simultaneous Note-Ons with 0 crashes.\n");
 
-    // Test 6: Note-Off Event & Voice Release State Machine Transition
-    err = vhl_single_voice_note_off(&voice);
-    assert(err == VHL_OK);
-    assert(vhl_single_voice_get_state(&voice) == VHL_VOICE_STATE_STOPPED);
+    // Test 6: Polyphonic Note-Off & ADSR Release Transition
+    for (uint8_t note = 48; note < 72; ++note) {
+        vhl_poly_synth_note_off(&synth, note);
+    }
 
-    printf("[TEST 6 PASS] Note-Off triggered state transition to STOPPED cleanly.\n");
+    // Render remaining release tail
+    for (int pass = 0; pass < 20; ++pass) {
+        vhl_poly_synth_render(&synth, &outBuf, 512);
+    }
+    assert(synth.activeVoiceCount == 0);
+
+    printf("[TEST 6 PASS] Polyphonic Note-Off released all voices cleanly.\n");
 
     printf("=============================================================\n");
-    printf("Stage 7 Acceptance Gate Passed 100%% Cleanly.\n");
+    printf("Stage 8 Acceptance Gate Passed 100%% Cleanly.\n");
     printf("=============================================================\n");
     return 0;
 }
