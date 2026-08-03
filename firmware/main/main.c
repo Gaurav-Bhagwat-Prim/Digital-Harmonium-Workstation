@@ -1,7 +1,7 @@
 /* =============================================================================
- * main.c — Digital Harmonium Workstation Stage 11 Test Harness
+ * main.c — Digital Harmonium Workstation Stage 12 Test Harness
  * Project: Digital Harmonium Workstation Firmware
- * Stage 11 — Event Recorder Engine & Performance Logging Subsystem
+ * Stage 12 — VHR Performance Playback Replayer Engine
  * ============================================================================= */
 
 #include <stdio.h>
@@ -14,373 +14,428 @@
 #include "vhl_config.h"
 #include "vhl_err.h"
 #include "vhr_format.h"
-#include "recorder_engine.h"
+#include "vhr_player.h"
 #include "event_bus.h"
 
 /* =============================================================================
- * Stage 11: Event Bus Recorder Tap Bridge
- *
- * This tap callback is registered with the Event Bus.
- * It receives key events (Note-On, Note-Off, Control-Change) posted to the
- * Event Bus and forwards them into the recorder ring buffer.
- * The recorder NEVER reads hardware inputs directly — only this tap path.
+ * Test Helper — CRC-32 (same polynomial as recorder and player)
+ * Used by the test harness to build valid mock .vhr buffers.
  * ============================================================================= */
 
-static uint32_t s_mock_timestamp_us = 0; /* unused after fix, kept for zero-init */
-
-
-static void recorder_event_bus_tap(const vhl_key_event_t* pEvent, void* pCtx)
+static uint32_t test_crc32(const uint8_t* pData, size_t length)
 {
-    vhl_recorder_engine_t* pRec = (vhl_recorder_engine_t*)pCtx;
-    if (!pRec || !pEvent) return;
-
-    /* Map vhl_key_action_t to vhr_event_type_t */
-    vhr_event_type_t evType = (pEvent->action == KEY_ACTION_PRESS)
-                              ? VHR_EVENT_NOTE_ON
-                              : VHR_EVENT_NOTE_OFF;
-
-    /* Derive microsecond timestamp from ms field */
-    uint32_t tsUs = pEvent->timestampMs * 1000U;
-
-    vhl_recorder_push_event(pRec, evType,
-                            pEvent->note,
-                            pEvent->velocity,
-                            0U /* channel */,
-                            tsUs);
+    uint32_t crc = 0xFFFFFFFFU;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= pData[i];
+        for (int b = 0; b < 8; ++b) {
+            crc = (crc & 1U) ? (crc >> 1) ^ 0xEDB88320U : crc >> 1;
+        }
+    }
+    return ~crc;
 }
+
+/* =============================================================================
+ * Test Helper — Build a valid in-memory .vhr binary
+ *
+ * Fills pBuf->header with correct magic, version, fields, and computes CRC-32
+ * over the event stream bytes (not the header). Matches the recorder's
+ * finalize_header() behavior exactly.
+ * ============================================================================= */
+
+#define MAX_TEST_EVENTS 32U
+
+typedef struct {
+    VHRFileHeader header;
+    VHREventEntry events[MAX_TEST_EVENTS];
+} test_vhr_buf_t;
+
+static void build_test_vhr(test_vhr_buf_t*      pBuf,
+                             const VHREventEntry* pEvts,
+                             uint32_t             numEvts,
+                             uint8_t              instrId,
+                             const char*          title)
+{
+    memset(pBuf, 0, sizeof(*pBuf));
+
+    pBuf->header.magic[0]         = VHR_MAGIC_0;
+    pBuf->header.magic[1]         = VHR_MAGIC_1;
+    pBuf->header.magic[2]         = VHR_MAGIC_2;
+    pBuf->header.magic[3]         = VHR_MAGIC_3;
+    pBuf->header.version_major    = VHR_VERSION_MAJOR;
+    pBuf->header.version_minor    = VHR_VERSION_MINOR;
+    pBuf->header.total_events     = numEvts;
+    pBuf->header.instrument_id    = instrId;
+    pBuf->header.timebase_us      = VHR_DEFAULT_TIMEBASE_US;
+    pBuf->header.ticks_per_quarter= VHR_DEFAULT_TICKS_PER_QN;
+    pBuf->header.total_file_size  = (uint32_t)sizeof(VHRFileHeader) +
+                                    numEvts * (uint32_t)sizeof(VHREventEntry);
+
+    if (title) {
+        strncpy(pBuf->header.title, title, sizeof(pBuf->header.title) - 1U);
+    }
+
+    if (numEvts > 0U && pEvts) {
+        memcpy(pBuf->events, pEvts, numEvts * sizeof(VHREventEntry));
+    }
+
+    /* CRC-32 over event stream bytes, matching recorder finalize_header() */
+    pBuf->header.crc32 = test_crc32((const uint8_t*)pBuf->events,
+                                     numEvts * sizeof(VHREventEntry));
+}
+
+static size_t vhr_buf_size(uint32_t numEvts) {
+    return sizeof(VHRFileHeader) + numEvts * sizeof(VHREventEntry);
+}
+
+/* =============================================================================
+ * Stage 12: Unit Tests
+ * ============================================================================= */
 
 int main(void)
 {
     printf("=============================================================\n");
-    printf("Digital Harmonium Workstation — Stage 11 Event Recorder Test\n");
+    printf("Digital Harmonium Workstation — Stage 12 Playback Replayer Test\n");
     printf("=============================================================\n\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 1: 5-State Recorder State Machine Transitions
+     * TEST 1: Player Initialization & IDLE State
      * -------------------------------------------------------------------------
-     * Trace: IDLE -> ARMED -> RECORDING -> STOPPING -> FLUSHING -> IDLE
-     * Pass Condition: State value matches expected enum at every transition.
+     * Call vhr_player_init(). Verify all fields are zeroed/default.
+     * Pass: state == IDLE, cursor == 0, accumulator == 0, speed == 1.0f.
      * ---------------------------------------------------------------------- */
     {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        assert(vhl_recorder_get_state(&rec) == VHR_RECORDER_STATE_IDLE);
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
 
-        vhl_recorder_arm(&rec, 0, "Test Song");
-        assert(vhl_recorder_get_state(&rec) == VHR_RECORDER_STATE_ARMED);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_IDLE);
+        assert(player.cursorIdx       == 0U);
+        assert(player.accumulatedUs   == 0U);
+        assert(player.cursorTimeUs    == 0U);
+        assert(player.eventsFireCount == 0U);
 
-        vhl_recorder_start(&rec, 0, "Test Song");
-        assert(vhl_recorder_get_state(&rec) == VHR_RECORDER_STATE_RECORDING);
-
-        vhl_recorder_stop(&rec);
-        assert(vhl_recorder_get_state(&rec) == VHR_RECORDER_STATE_FLUSHING);
-
-        /* Drain ring buffer to complete FLUSHING -> IDLE */
-        VHREventEntry scratch[16];
-        uint32_t drained = 0;
-        vhl_recorder_flush_block(&rec, scratch, 16, &drained);
-        assert(vhl_recorder_get_state(&rec) == VHR_RECORDER_STATE_IDLE);
+        /* speed clamped and defaulted */
+        float diff = player.speedMultiplier - VHR_PLAYER_SPEED_DEFAULT;
+        if (diff < 0.0f) diff = -diff;
+        assert(diff < 1e-6f);
     }
-    printf("[TEST 1 PASS] 5-State recorder state machine verified.\n");
+    printf("[TEST 1 PASS] Player initialization & IDLE state verified.\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 2: SPSC Ring Buffer VHL_RECORDER_RING_SIZE Macro Bounds
+     * TEST 2: VHR Header Load & CRC-32 Validation (over event stream)
      * -------------------------------------------------------------------------
-     * Push exactly VHL_RECORDER_RING_SIZE - 1 events (max safe fill).
-     * Drain all. Verify FIFO integrity and macro-driven bounds.
-     * Pass Condition: All events drain in order, no pointer corruption.
+     * Build valid mock VHR with 3 events. Call vhr_player_load().
+     * Pass: LOADING → READY, totalEvents == 3.
      * ---------------------------------------------------------------------- */
     {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "Buffer Test");
+        VHREventEntry evts[3] = {
+            { .delta_us = 0U,      .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 60, .data2 = 100, .channel = 0 },
+            { .delta_us = 50000U,  .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 64, .data2 = 90,  .channel = 0 },
+            { .delta_us = 70000U,  .type = (uint8_t)VHR_EVENT_NOTE_OFF, .data1 = 60, .data2 = 0,   .channel = 0 },
+        };
 
-        uint32_t pushCount = VHL_RECORDER_RING_SIZE - 1U;
-        for (uint32_t i = 0; i < pushCount; ++i) {
-            vhl_err_t e = vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,
-                                                  (uint8_t)(i % 128),
-                                                  100,
-                                                  0,
-                                                  i * 1000U);
-            assert(e == VHL_OK);
-        }
-        assert(rec.totalEventsRecorded == pushCount);
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 3U, 1U, "Load Test");
 
-        /* Drain all events */
-        VHREventEntry drainBuf[VHL_RECORDER_RING_SIZE];
-        uint32_t totalDrained = 0;
-        uint32_t drainedThisCall = 0;
-        vhl_recorder_flush_block(&rec, drainBuf, VHL_RECORDER_RING_SIZE, &drainedThisCall);
-        totalDrained += drainedThisCall;
-        assert(totalDrained == pushCount);
-        assert(rec.head == rec.tail); /* Ring buffer is empty */
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
+
+        vhl_err_t err = vhr_player_load(&player, &buf, vhr_buf_size(3U));
+        assert(err == VHL_OK);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_READY);
+        assert(player.totalEvents == 3U);
+        assert(player.cursorIdx   == 0U);
     }
-    printf("[TEST 2 PASS] SPSC ring buffer VHL_RECORDER_RING_SIZE macro verified.\n");
+    printf("[TEST 2 PASS] VHR header load & CRC-32 validation verified.\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 3: Strongly Typed vhr_event_type_t & data1/data2 Fields
+     * TEST 3: CRC Mismatch Rejection
      * -------------------------------------------------------------------------
-     * Push NOTE_ON, NOTE_OFF, CONTROL_CHANGE, TEMPO_CHANGE events.
-     * Drain and verify type enum, data1 (note/CC number), data2 (velocity/value).
-     * Pass Condition: All fields match expected values using the renamed data1/data2.
+     * Corrupt header.crc32 by +1. Call vhr_player_load().
+     * Pass: returns VHL_ERR_VHL_CRC_MISMATCH, state == IDLE.
      * ---------------------------------------------------------------------- */
     {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "Type Test");
+        VHREventEntry evts[2] = {
+            { .delta_us = 0U,     .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 60, .data2 = 80, .channel = 0 },
+            { .delta_us = 10000U, .type = (uint8_t)VHR_EVENT_NOTE_OFF, .data1 = 60, .data2 = 0,  .channel = 0 },
+        };
 
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,          60, 100, 0, 0U);
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_OFF,         60,   0, 0, 50000U);
-        vhl_recorder_push_event(&rec, VHR_EVENT_CONTROL_CHANGE,    7,  80, 0, 60000U);
-        vhl_recorder_push_event(&rec, VHR_EVENT_TEMPO_CHANGE,    120,   0, 0, 70000U);
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 2U, 0U, "CRC Reject Test");
+        buf.header.crc32 += 1U; /* Corrupt CRC by +1 */
 
-        VHREventEntry buf[8];
-        uint32_t drained = 0;
-        vhl_recorder_flush_block(&rec, buf, 8, &drained);
-        assert(drained == 4);
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
 
-        assert(buf[0].type  == (uint8_t)VHR_EVENT_NOTE_ON);
-        assert(buf[0].data1 == 60);
-        assert(buf[0].data2 == 100);
-
-        assert(buf[1].type  == (uint8_t)VHR_EVENT_NOTE_OFF);
-        assert(buf[1].data1 == 60);
-        assert(buf[1].data2 == 0);
-
-        assert(buf[2].type  == (uint8_t)VHR_EVENT_CONTROL_CHANGE);
-        assert(buf[2].data1 == 7);
-        assert(buf[2].data2 == 80);
-
-        assert(buf[3].type  == (uint8_t)VHR_EVENT_TEMPO_CHANGE);
-        assert(buf[3].data1 == 120);
+        vhl_err_t err = vhr_player_load(&player, &buf, vhr_buf_size(2U));
+        assert(err == VHL_ERR_VHL_CRC_MISMATCH);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_IDLE);
     }
-    printf("[TEST 3 PASS] Strongly typed vhr_event_type_t & data1/data2 fields verified.\n");
+    printf("[TEST 3 PASS] CRC mismatch rejection verified.\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 4: Microsecond Delta Timestamp Encoding
+     * TEST 4: Single Large Tick → All Events Fire → FINISHED
      * -------------------------------------------------------------------------
-     * Simulate events at 0 us, 50000 us, 120000 us.
-     * Verify delta_us values: 0, 50000, 70000.
-     * Pass Condition: Computed delta_us matches expected inter-event intervals.
+     * 3 events at delta: 0, 50000, 70000 µs. Total = 120000 µs.
+     * play(). tick(200000) — more than enough for all events.
+     * Pass: eventsFireCount == 3, state == FINISHED.
      * ---------------------------------------------------------------------- */
     {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "Timestamp Test");
+        VHREventEntry evts[3] = {
+            { .delta_us = 0U,     .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 60, .data2 = 100, .channel = 0 },
+            { .delta_us = 50000U, .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 64, .data2 = 90,  .channel = 0 },
+            { .delta_us = 70000U, .type = (uint8_t)VHR_EVENT_NOTE_OFF, .data1 = 60, .data2 = 0,   .channel = 0 },
+        };
 
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,  60, 100, 0, 0U);
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,  62, 100, 0, 50000U);
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_OFF, 60,   0, 0, 120000U);
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 3U, 0U, "Single Tick Test");
 
-        VHREventEntry buf[4];
-        uint32_t drained = 0;
-        vhl_recorder_flush_block(&rec, buf, 4, &drained);
-        assert(drained == 3);
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
+        vhr_player_load(&player, &buf, vhr_buf_size(3U));
+        vhr_player_play(&player);
 
-        assert(buf[0].delta_us == 0U);
-        assert(buf[1].delta_us == 50000U);
-        assert(buf[2].delta_us == 70000U);
+        vhr_player_tick(&player, 200000U);
+
+        assert(player.eventsFireCount == 3U);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_FINISHED);
     }
-    printf("[TEST 4 PASS] Microsecond delta timestamp encoding verified.\n");
+    printf("[TEST 4 PASS] Single-tick full event replay verified.\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 5: Lock-Free O(1) Non-Blocking Execution (<1 us per push)
+     * TEST 5: Multi-Tick Partial Advance — Only Due Events Fire Per Tick
      * -------------------------------------------------------------------------
-     * Push 1000 events and measure total elapsed time.
-     * Pass Condition: Total time / 1000 < 1.0 us per event.
+     * Events at delta: 0, 50000, 70000 µs.
+     * tick(30000): event[0] fires (t=0 ≤ 30000). eventsFireCount == 1.
+     * tick(30000): accum=60000; event[1] fires (t=50000 ≤ 60000). count == 2.
+     * tick(100000): accum=160000; event[2] fires (t=120000 ≤ 160000). count == 3.
      * ---------------------------------------------------------------------- */
     {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "Perf Test");
+        VHREventEntry evts[3] = {
+            { .delta_us = 0U,     .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 60, .data2 = 100, .channel = 0 },
+            { .delta_us = 50000U, .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 62, .data2 = 90,  .channel = 0 },
+            { .delta_us = 70000U, .type = (uint8_t)VHR_EVENT_NOTE_OFF, .data1 = 60, .data2 = 0,   .channel = 0 },
+        };
 
-        clock_t start = clock();
-        for (int i = 0; i < 1000; ++i) {
-            /* Use modulo to keep within ring buffer capacity */
-            if (i % (VHL_RECORDER_RING_SIZE - 1) == 0 && i > 0) {
-                VHREventEntry tmp[VHL_RECORDER_RING_SIZE];
-                uint32_t d = 0;
-                vhl_recorder_flush_block(&rec, tmp, VHL_RECORDER_RING_SIZE, &d);
-            }
-            vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,
-                                    (uint8_t)(i % 128), 100, 0,
-                                    (uint32_t)(i * 1000));
-        }
-        clock_t end = clock();
-        double totalUs = ((double)(end - start) / CLOCKS_PER_SEC) * 1e6;
-        double usPerPush = totalUs / 1000.0;
-        assert(usPerPush < 1.0);
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 3U, 0U, "Multi-Tick Test");
+
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
+        vhr_player_load(&player, &buf, vhr_buf_size(3U));
+        vhr_player_play(&player);
+
+        vhr_player_tick(&player, 30000U);
+        assert(player.eventsFireCount == 1U);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_PLAYING);
+
+        vhr_player_tick(&player, 30000U);
+        assert(player.eventsFireCount == 2U);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_PLAYING);
+
+        vhr_player_tick(&player, 100000U);
+        assert(player.eventsFireCount == 3U);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_FINISHED);
     }
-    printf("[TEST 5 PASS] Lock-free non-blocking performance verified (<1us).\n");
+    printf("[TEST 5 PASS] Multi-tick partial advance timing verified.\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 6: Pure Event Bus-Driven Recorder Tap Verified
+     * TEST 6: Event Bus Re-Injection — NOTE_ON/NOTE_OFF Arrive at Key Queue
      * -------------------------------------------------------------------------
-     * Register the recorder tap on the Event Bus.
-     * Post NOTE_ON/NOTE_OFF events via vhl_event_bus_post_key_event().
-     * Verify they appear in the recorder ring buffer without hardware access.
-     * Pass Condition: Recorder ring buffer contains all bus-posted events.
+     * Load VHR with NOTE_ON (note=48, vel=80) and NOTE_OFF (note=48, vel=0).
+     * Drain Event Bus before test. play() + tick(large).
+     * Pop events from bus and verify note/action match exactly.
+     * Pass: Both replayed events arrive at the Event Bus key queue unchanged.
      * ---------------------------------------------------------------------- */
     {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "Bus Tap Test");
-        s_mock_timestamp_us = 0; /* reset for clarity */
+        VHREventEntry evts[2] = {
+            { .delta_us = 0U,    .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 48, .data2 = 80, .channel = 0 },
+            { .delta_us = 5000U, .type = (uint8_t)VHR_EVENT_NOTE_OFF, .data1 = 48, .data2 = 0,  .channel = 0 },
+        };
 
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 2U, 0U, "Bus Inject Test");
 
+        /* Clear Event Bus queue before test */
         vhl_event_bus_init();
-        vhl_event_bus_set_recorder_hook(recorder_event_bus_tap, &rec);
-
-        vhl_key_event_t ev1 = { .note = 60, .velocity = 100, .action = KEY_ACTION_PRESS,   .timestampMs = 10U };
-        vhl_key_event_t ev2 = { .note = 64, .velocity = 90,  .action = KEY_ACTION_PRESS,   .timestampMs = 20U };
-        vhl_key_event_t ev3 = { .note = 60, .velocity = 0,   .action = KEY_ACTION_RELEASE, .timestampMs = 30U };
-
-        vhl_event_bus_post_key_event(&ev1);
-        vhl_event_bus_post_key_event(&ev2);
-        vhl_event_bus_post_key_event(&ev3);
-
-        /* Deregister tap */
+        /* Deregister any recorder tap so played events don't loop back */
         vhl_event_bus_set_recorder_hook(NULL, NULL);
 
-        VHREventEntry buf[8];
-        uint32_t drained = 0;
-        vhl_recorder_flush_block(&rec, buf, 8, &drained);
-        assert(drained == 3);
-        assert(buf[0].type  == (uint8_t)VHR_EVENT_NOTE_ON  && buf[0].data1 == 60);
-        assert(buf[1].type  == (uint8_t)VHR_EVENT_NOTE_ON  && buf[1].data1 == 64);
-        assert(buf[2].type  == (uint8_t)VHR_EVENT_NOTE_OFF && buf[2].data1 == 60);
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
+        vhr_player_load(&player, &buf, vhr_buf_size(2U));
+        vhr_player_play(&player);
+        vhr_player_tick(&player, 100000U);
+
+        assert(player.eventsFireCount == 2U);
+
+        /* Pop events from the Event Bus and verify */
+        vhl_key_event_t popped1, popped2;
+        vhl_err_t e1 = vhl_event_bus_pop_key_event(&popped1, 0U);
+        vhl_err_t e2 = vhl_event_bus_pop_key_event(&popped2, 0U);
+
+        assert(e1 == VHL_OK);
+        assert(popped1.action   == KEY_ACTION_PRESS);
+        assert(popped1.note     == 48U);
+        assert(popped1.velocity == 80U);
+
+        assert(e2 == VHL_OK);
+        assert(popped2.action   == KEY_ACTION_RELEASE);
+        assert(popped2.note     == 48U);
     }
-    printf("[TEST 6 PASS] Pure Event Bus-driven recorder tap verified.\n");
+    printf("[TEST 6 PASS] Event Bus re-injection (NOTE_ON/NOTE_OFF) verified.\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 7: Extended VHR File Header & timebase_us Field
+     * TEST 7: Pause / Resume with Timing Continuity
      * -------------------------------------------------------------------------
-     * Arm recorder, finalize header, and audit all header fields.
-     * Pass Condition: 64-byte header, magic VHR1, version 1.0,
-     *                 timebase_us == 1000, ticks_per_quarter == 480.
+     * Events at delta: 0, 50000 µs. play(). tick(30000) → event[0] fires.
+     * pause(). tick(1000000) — nothing fires (wall clock frozen).
+     * play() resume. tick(30000) → accum grows to 60000; event[1] fires.
+     * Pass: eventsFireCount == 1 after pause-tick, == 2 after resume-tick.
      * ---------------------------------------------------------------------- */
     {
-        assert(sizeof(VHRFileHeader) == 64U);
+        VHREventEntry evts[2] = {
+            { .delta_us = 0U,     .type = (uint8_t)VHR_EVENT_NOTE_ON, .data1 = 55, .data2 = 100, .channel = 0 },
+            { .delta_us = 50000U, .type = (uint8_t)VHR_EVENT_NOTE_ON, .data1 = 57, .data2 = 90,  .channel = 0 },
+        };
 
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_arm(&rec, 1, "Header Test");
-        vhl_recorder_start(&rec, 1, "Header Test");
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON, 60, 100, 0, 0U);
-        vhl_recorder_stop(&rec);
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 2U, 0U, "Pause Resume Test");
 
-        VHREventEntry tmp[16]; uint32_t d = 0;
-        vhl_recorder_flush_block(&rec, tmp, 16, &d);
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
+        vhr_player_load(&player, &buf, vhr_buf_size(2U));
+        vhr_player_play(&player);
 
-        VHRFileHeader hdr;
-        vhl_recorder_finalize_header(&rec, &hdr);
+        vhr_player_tick(&player, 30000U); /* event[0] at t=0 fires. accum=30000 */
+        assert(player.eventsFireCount == 1U);
 
-        assert(hdr.magic[0] == VHR_MAGIC_0 && hdr.magic[1] == VHR_MAGIC_1);
-        assert(hdr.magic[2] == VHR_MAGIC_2 && hdr.magic[3] == VHR_MAGIC_3);
-        assert(hdr.version_major     == VHR_VERSION_MAJOR);
-        assert(hdr.version_minor     == VHR_VERSION_MINOR);
-        assert(hdr.timebase_us       == VHR_DEFAULT_TIMEBASE_US);
-        assert(hdr.ticks_per_quarter == VHR_DEFAULT_TICKS_PER_QN);
-        assert(hdr.instrument_id     == 1);
+        vhr_player_pause(&player);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_PAUSED);
+
+        vhr_player_tick(&player, 1000000U); /* 1 second passes — nothing fires (paused) */
+        assert(player.eventsFireCount == 1U);
+        assert(player.accumulatedUs   == 30000U); /* Accumulator frozen during pause */
+
+        vhr_player_play(&player); /* Resume */
+        vhr_player_tick(&player, 30000U); /* accum=60000; event[1] at t=50000 fires */
+        assert(player.eventsFireCount == 2U);
     }
-    printf("[TEST 7 PASS] Extended VHR file header & timebase_us verified.\n");
+    printf("[TEST 7 PASS] Pause/Resume with timing continuity verified.\n");
 
     /* -------------------------------------------------------------------------
-     * TEST 8: Performance Recording Lifecycle & Duration Tracking
+     * TEST 8: Stop & Reset to Position 0
      * -------------------------------------------------------------------------
-     * Record 50 events with increasing timestamps (1 ms apart).
-     * Stop and finalize. Verify total_events == 50 and duration_ms == 49.
-     * Pass Condition: Header reflects accurate event count and duration.
+     * Load, play, fire events, call stop(). Verify full reset.
+     * Pass: cursorIdx==0, accumulatedUs==0, state==READY.
      * ---------------------------------------------------------------------- */
     {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "Lifecycle Test");
+        VHREventEntry evts[3] = {
+            { .delta_us = 0U,     .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 60, .data2 = 100, .channel = 0 },
+            { .delta_us = 10000U, .type = (uint8_t)VHR_EVENT_NOTE_OFF, .data1 = 60, .data2 = 0,   .channel = 0 },
+            { .delta_us = 5000U,  .type = (uint8_t)VHR_EVENT_NOTE_ON,  .data1 = 62, .data2 = 100, .channel = 0 },
+        };
 
-        for (int i = 0; i < 50; ++i) {
-            vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,
-                                    (uint8_t)(48 + (i % 12)),
-                                    100, 0,
-                                    (uint32_t)(i * 1000U));
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 3U, 0U, "Stop Reset Test");
+
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
+        vhr_player_load(&player, &buf, vhr_buf_size(3U));
+        vhr_player_play(&player);
+        vhr_player_tick(&player, 50000U); /* Fire all events */
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_FINISHED);
+
+        vhr_player_stop(&player);
+
+        assert(player.cursorIdx      == 0U);
+        assert(player.accumulatedUs  == 0U);
+        assert(player.cursorTimeUs   == 0U);
+        assert(player.eventsFireCount == 0U);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_READY);
+    }
+    printf("[TEST 8 PASS] Stop & reset to position 0 verified.\n");
+
+    /* -------------------------------------------------------------------------
+     * TEST 9: Speed Multiplier 2× (Double Speed)
+     * -------------------------------------------------------------------------
+     * One event at delta_us = 100000 (100 ms). set_speed(2.0f). play().
+     * tick(50000) = only 50 ms elapsed, but 50000 * 2.0 = 100000 µs.
+     * The event should fire because its absolute time (100000 µs) is met.
+     * Pass: eventsFireCount == 1 after only 50ms of elapsed time.
+     * ---------------------------------------------------------------------- */
+    {
+        VHREventEntry evts[1] = {
+            { .delta_us = 100000U, .type = (uint8_t)VHR_EVENT_NOTE_ON, .data1 = 60, .data2 = 100, .channel = 0 },
+        };
+
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 1U, 0U, "Speed 2x Test");
+
+        vhl_vhr_player_t player;
+        vhr_player_init(&player);
+        vhr_player_load(&player, &buf, vhr_buf_size(1U));
+        vhr_player_set_speed(&player, 2.0f);
+        vhr_player_play(&player);
+
+        vhr_player_tick(&player, 50000U); /* 50ms * 2.0 = 100ms virtual time */
+
+        assert(player.eventsFireCount == 1U);
+        assert(vhr_player_get_state(&player) == VHR_PLAYER_STATE_FINISHED);
+
+        /* Verify speed clamp: below minimum is clamped to 0.25f */
+        vhr_player_set_speed(&player, 0.01f);
+        float diff = player.speedMultiplier - VHR_PLAYER_SPEED_MIN;
+        if (diff < 0.0f) diff = -diff;
+        assert(diff < 1e-6f);
+
+        /* Verify speed clamp: above maximum is clamped to 4.0f */
+        vhr_player_set_speed(&player, 99.0f);
+        diff = player.speedMultiplier - VHR_PLAYER_SPEED_MAX;
+        if (diff < 0.0f) diff = -diff;
+        assert(diff < 1e-6f);
+    }
+    printf("[TEST 9 PASS] Speed multiplier 2x & speed clamp [0.25, 4.0] verified.\n");
+
+    /* -------------------------------------------------------------------------
+     * TEST 10: Tick Performance Budget (<1 ms for 16 simultaneous events)
+     * -------------------------------------------------------------------------
+     * Load 16 events all at delta_us = 0 (fire simultaneously on first tick).
+     * Measure tick() execution time averaged over 200 load-play-tick cycles.
+     * Pass: average tick time (including inject) < 1ms.
+     * ---------------------------------------------------------------------- */
+    {
+        VHREventEntry evts[16];
+        memset(evts, 0, sizeof(evts));
+        for (int i = 0; i < 16; ++i) {
+            evts[i].delta_us = 0U;
+            evts[i].type     = (uint8_t)((i % 2 == 0) ? VHR_EVENT_NOTE_ON : VHR_EVENT_NOTE_OFF);
+            evts[i].data1    = (uint8_t)(48 + i);
+            evts[i].data2    = 100U;
         }
-        assert(rec.totalEventsRecorded == 50U);
-        vhl_recorder_stop(&rec);
 
-        VHREventEntry tmp[VHL_RECORDER_RING_SIZE];
-        uint32_t d = 0;
-        vhl_recorder_flush_block(&rec, tmp, VHL_RECORDER_RING_SIZE, &d);
+        test_vhr_buf_t buf;
+        build_test_vhr(&buf, evts, 16U, 0U, "Perf Test");
 
-        VHRFileHeader hdr;
-        vhl_recorder_finalize_header(&rec, &hdr);
-        assert(hdr.total_events == 50U);
-        assert(hdr.duration_ms  == 49U);  /* (49 * 1000 us) / 1000 = 49 ms */
-    }
-    printf("[TEST 8 PASS] Performance recording lifecycle verified.\n");
-
-    /* -------------------------------------------------------------------------
-     * TEST 9: CRC-32 Checksum Computation
-     * -------------------------------------------------------------------------
-     * Record events, finalize header, compute CRC-32 again independently.
-     * Pass Condition: Header crc32 field is non-zero and deterministic
-     *                 (same input produces same checksum).
-     * ---------------------------------------------------------------------- */
-    {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "CRC Test");
-
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,  60, 100, 0, 0U);
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_OFF, 60,   0, 0, 500000U);
-        vhl_recorder_stop(&rec);
-
-        VHREventEntry tmp[16]; uint32_t d = 0;
-        vhl_recorder_flush_block(&rec, tmp, 16, &d);
-
-        VHRFileHeader hdr1, hdr2;
-        vhl_recorder_finalize_header(&rec, &hdr1);
-
-        /* Reset and repeat — CRC must be deterministic */
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "CRC Test");
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,  60, 100, 0, 0U);
-        vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_OFF, 60,   0, 0, 500000U);
-        vhl_recorder_stop(&rec);
-        vhl_recorder_flush_block(&rec, tmp, 16, &d);
-        vhl_recorder_finalize_header(&rec, &hdr2);
-
-        assert(hdr1.crc32 != 0);
-        assert(hdr1.crc32 == hdr2.crc32);
-    }
-    printf("[TEST 9 PASS] CRC-32 checksum computation verified.\n");
-
-    /* -------------------------------------------------------------------------
-     * TEST 10: Ring Buffer Overflow Protection
-     * -------------------------------------------------------------------------
-     * Fill buffer beyond VHL_RECORDER_RING_SIZE capacity without draining.
-     * Pass Condition: overflow counter increments; existing buffer uncorrupted.
-     * ---------------------------------------------------------------------- */
-    {
-        vhl_recorder_engine_t rec;
-        vhl_recorder_init(&rec);
-        vhl_recorder_start(&rec, 0, "Overflow Test");
-
-        /* Fill to capacity (ring holds RING_SIZE-1 at most) */
-        uint32_t overflowTarget = VHL_RECORDER_RING_SIZE + 10U;
-        uint32_t accepted = 0;
-        for (uint32_t i = 0; i < overflowTarget; ++i) {
-            vhl_err_t e = vhl_recorder_push_event(&rec, VHR_EVENT_NOTE_ON,
-                                                  (uint8_t)(i % 128),
-                                                  100, 0, i * 1000U);
-            if (e == VHL_OK) accepted++;
+        clock_t totalStart = clock();
+        for (int iter = 0; iter < 200; ++iter) {
+            vhl_vhr_player_t player;
+            vhr_player_init(&player);
+            vhr_player_load(&player, &buf, vhr_buf_size(16U));
+            vhr_player_play(&player);
+            vhr_player_tick(&player, 1U);  /* 1µs tick fires all 16 events (delta=0) */
         }
-        /* Exactly VHL_RECORDER_RING_SIZE - 1 accepted, rest overflowed */
-        assert(accepted  == VHL_RECORDER_RING_SIZE - 1U);
-        assert(rec.overflowCount > 0U);
+        clock_t totalEnd = clock();
+
+        double totalMs   = ((double)(totalEnd - totalStart) / (double)CLOCKS_PER_SEC) * 1000.0;
+        double msPerIter = totalMs / 200.0;
+
+        /* Each iteration: load + play + tick(16 events) < 1ms */
+        assert(msPerIter < 1.0);
     }
-    printf("[TEST 10 PASS] Ring buffer overflow protection verified.\n");
+    printf("[TEST 10 PASS] Tick performance budget (<1ms / 16 events) verified.\n");
 
     printf("\n=============================================================\n");
-    printf("Stage 11 Acceptance Gate Passed 100%% Cleanly.\n");
+    printf("Stage 12 Acceptance Gate Passed 100%% Cleanly.\n");
     printf("=============================================================\n");
 
     return 0;

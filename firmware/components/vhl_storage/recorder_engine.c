@@ -7,10 +7,10 @@
 #include "recorder_engine.h"
 #include <string.h>
 
-/* Helper: Calculate CRC-32 Checksum over byte buffer */
-static uint32_t calculate_crc32(const uint8_t* pData, size_t length)
+/* Helper: Accumulate CRC-32 over a byte buffer (IEEE 802.3 polynomial, incremental).
+ * Initial CRC must be 0xFFFFFFFF. Finalize with bitwise NOT (~crc). */
+static uint32_t crc32_update_bytes(uint32_t crc, const uint8_t* pData, size_t length)
 {
-    uint32_t crc = 0xFFFFFFFFU;
     for (size_t i = 0; i < length; ++i) {
         crc ^= pData[i];
         for (int b = 0; b < 8; ++b) {
@@ -21,7 +21,7 @@ static uint32_t calculate_crc32(const uint8_t* pData, size_t length)
             }
         }
     }
-    return ~crc;
+    return crc;
 }
 
 vhl_err_t vhl_recorder_init(vhl_recorder_engine_t* pRecorder)
@@ -42,6 +42,7 @@ vhl_err_t vhl_recorder_arm(vhl_recorder_engine_t* pRecorder, uint8_t instrumentI
     pRecorder->overflowCount       = 0;
     pRecorder->peakRingDepth       = 0;
     pRecorder->activeInstrumentId  = instrumentId;
+    pRecorder->runningEventCrc     = 0xFFFFFFFFU; /* CRC-32 initial value for event stream */
 
     memset(&pRecorder->fileHeader, 0, sizeof(VHRFileHeader));
     pRecorder->fileHeader.magic[0]     = VHR_MAGIC_0;
@@ -170,6 +171,12 @@ vhl_err_t vhl_recorder_flush_block(vhl_recorder_engine_t* pRecorder,
     uint32_t currentTail = pRecorder->tail;
 
     while (currentTail != pRecorder->head && drained < maxEvents) {
+        /* Accumulate CRC-32 over each drained event entry (8 bytes) */
+        pRecorder->runningEventCrc = crc32_update_bytes(
+            pRecorder->runningEventCrc,
+            (const uint8_t*)&pRecorder->ringBuffer[currentTail],
+            sizeof(VHREventEntry)
+        );
         outBuffer[drained++] = pRecorder->ringBuffer[currentTail];
         currentTail = (currentTail + 1U) % VHL_RECORDER_RING_SIZE;
     }
@@ -195,8 +202,9 @@ vhl_err_t vhl_recorder_finalize_header(vhl_recorder_engine_t* pRecorder, VHRFile
     pRecorder->fileHeader.duration_ms     = (pRecorder->lastEventTimestampUs - pRecorder->recordingStartTimestampUs) / 1000U;
     pRecorder->fileHeader.total_file_size = (uint32_t)sizeof(VHRFileHeader) + (pRecorder->totalEventsRecorded * (uint32_t)sizeof(VHREventEntry));
 
-    // Calculate CRC-32 of header (with crc32 field zeroed)
-    pRecorder->fileHeader.crc32 = calculate_crc32((const uint8_t*)&pRecorder->fileHeader, sizeof(VHRFileHeader));
+    /* CRC-32 is computed over the event stream (accumulated incrementally during flush_block).
+     * Finalize by bitwise-NOT. The player will recompute over the same bytes and compare. */
+    pRecorder->fileHeader.crc32 = ~pRecorder->runningEventCrc;
 
     *outHeader = pRecorder->fileHeader;
     return VHL_OK;

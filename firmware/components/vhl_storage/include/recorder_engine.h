@@ -40,6 +40,8 @@ typedef struct {
     uint32_t             peakRingDepth;
     uint8_t              activeInstrumentId;
 
+    uint32_t             runningEventCrc;          /* Incremental CRC-32 over flushed event stream bytes */
+
     VHRFileHeader        fileHeader;
 } vhl_recorder_engine_t;
 
