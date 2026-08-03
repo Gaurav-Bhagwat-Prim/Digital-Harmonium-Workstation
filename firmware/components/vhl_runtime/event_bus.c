@@ -1,7 +1,8 @@
 /* =============================================================================
  * event_bus.c — Inter-Task Queues & Event Bus Engine Implementation
  * Project: Digital Harmonium Workstation Firmware
- * Stage 4 — Event Bus Architecture
+ * Stage 4  — Event Bus Architecture
+ * Stage 11 — Recorder Tap Hook Integration
  * ============================================================================= */
 
 #include "event_bus.h"
@@ -13,6 +14,10 @@
 
 static vhl_queue_stats_t s_queue_stats[VHL_QUEUE_MAX_QUEUES];
 static uint32_t          s_system_event_bits = 0;
+
+/* Stage 11: Recorder Tap Hook State */
+static vhl_recorder_tap_fn_t s_recorder_tap_fn  = NULL;
+static void*                 s_recorder_tap_ctx  = NULL;
 
 /* -----------------------------------------------------------------------------
  * Ring Buffer Struct for Standalone Host Verification Mode
@@ -107,8 +112,27 @@ vhl_err_t vhl_event_bus_init(void)
 
     s_system_event_bits = 0;
 
+    /* Stage 11: clear recorder tap on (re-)init */
+    s_recorder_tap_fn  = NULL;
+    s_recorder_tap_ctx = NULL;
+
     return VHL_OK;
 }
+
+/* -----------------------------------------------------------------------------
+ * Stage 11: Recorder Tap Hook Registration
+ * ----------------------------------------------------------------------------- */
+
+vhl_err_t vhl_event_bus_set_recorder_hook(vhl_recorder_tap_fn_t tapFn, void* pCtx)
+{
+    s_recorder_tap_fn  = tapFn;
+    s_recorder_tap_ctx = pCtx;
+    return VHL_OK;
+}
+
+/* -----------------------------------------------------------------------------
+ * Key Event Queue — posts to queue then fires recorder tap (non-blocking)
+ * ----------------------------------------------------------------------------- */
 
 vhl_err_t vhl_event_bus_post_key_event(const vhl_key_event_t* pEvent)
 {
@@ -116,8 +140,19 @@ vhl_err_t vhl_event_bus_post_key_event(const vhl_key_event_t* pEvent)
         return VHL_ERR_INVALID_ARG;
     }
 
-    // Key Queue Overflow Policy: Drop newest if full, but NoteOn/NoteOff take priority over slider motion
+    // Key Queue Overflow Policy: Drop newest if full (NoteOn/NoteOff are critical)
     bool success = queue_push(&s_key_queue, pEvent, VHL_QUEUE_ID_KEY_EVENTS, false);
+
+    /*
+     * Stage 11: Pure Event Bus-Driven Recorder Tap.
+     * After enqueueing, fire the recorder tap callback if registered.
+     * This is non-blocking (<1 us) — the recorder's push_event() is lock-free.
+     * Playback (Stage 12) will re-inject events through this same path.
+     */
+    if (s_recorder_tap_fn) {
+        s_recorder_tap_fn(pEvent, s_recorder_tap_ctx);
+    }
+
     return success ? VHL_OK : VHL_ERR_NO_MEM;
 }
 
@@ -126,7 +161,7 @@ vhl_err_t vhl_event_bus_pop_key_event(vhl_key_event_t* pOutEvent, uint32_t timeo
     if (!pOutEvent) {
         return VHL_ERR_INVALID_ARG;
     }
-
+    (void)timeoutMs; /* Non-blocking in host mode */
     bool success = queue_pop(&s_key_queue, pOutEvent, VHL_QUEUE_ID_KEY_EVENTS);
     return success ? VHL_OK : VHL_ERR_TIMEOUT;
 }
@@ -136,8 +171,6 @@ vhl_err_t vhl_event_bus_post_ui_cmd(const vhl_ui_cmd_t* pCmd)
     if (!pCmd) {
         return VHL_ERR_INVALID_ARG;
     }
-
-    // UI Queue Overflow Policy: Drop oldest stale redraw command if full
     bool success = queue_push(&s_ui_queue, pCmd, VHL_QUEUE_ID_UI_CMDS, true);
     return success ? VHL_OK : VHL_ERR_NO_MEM;
 }
@@ -147,7 +180,7 @@ vhl_err_t vhl_event_bus_pop_ui_cmd(vhl_ui_cmd_t* pOutCmd, uint32_t timeoutMs)
     if (!pOutCmd) {
         return VHL_ERR_INVALID_ARG;
     }
-
+    (void)timeoutMs;
     bool success = queue_pop(&s_ui_queue, pOutCmd, VHL_QUEUE_ID_UI_CMDS);
     return success ? VHL_OK : VHL_ERR_TIMEOUT;
 }
@@ -157,7 +190,6 @@ vhl_err_t vhl_event_bus_post_storage_msg(const vhl_storage_msg_t* pMsg)
     if (!pMsg) {
         return VHL_ERR_INVALID_ARG;
     }
-
     bool success = queue_push(&s_storage_queue, pMsg, VHL_QUEUE_ID_STORAGE_MSGS, false);
     return success ? VHL_OK : VHL_ERR_NO_MEM;
 }
@@ -167,7 +199,7 @@ vhl_err_t vhl_event_bus_pop_storage_msg(vhl_storage_msg_t* pOutMsg, uint32_t tim
     if (!pOutMsg) {
         return VHL_ERR_INVALID_ARG;
     }
-
+    (void)timeoutMs;
     bool success = queue_pop(&s_storage_queue, pOutMsg, VHL_QUEUE_ID_STORAGE_MSGS);
     return success ? VHL_OK : VHL_ERR_TIMEOUT;
 }
@@ -226,7 +258,6 @@ vhl_err_t vhl_event_bus_get_queue_stats(vhl_queue_id_t queueId, vhl_queue_stats_
     if (queueId >= VHL_QUEUE_MAX_QUEUES || !outStats) {
         return VHL_ERR_INVALID_ARG;
     }
-
     *outStats = s_queue_stats[queueId];
     return VHL_OK;
 }

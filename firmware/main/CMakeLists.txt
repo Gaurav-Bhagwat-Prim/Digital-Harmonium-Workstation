@@ -7,5 +7,9 @@ if(DEFINED ENV{IDF_PATH})
     )
 else()
     add_executable(digital_harmonium_firmware main.c)
-    target_link_libraries(digital_harmonium_firmware PRIVATE vhl_core vhl_hal vhl_runtime vhl_input vhl_audio)
+    target_include_directories(digital_harmonium_firmware PRIVATE 
+        "${CMAKE_CURRENT_SOURCE_DIR}/../components/vhl_storage/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../components/vhl_feature/include"
+    )
+    target_link_libraries(digital_harmonium_firmware PRIVATE vhl_core vhl_hal vhl_runtime vhl_input vhl_audio vhl_storage vhl_feature)
 endif()

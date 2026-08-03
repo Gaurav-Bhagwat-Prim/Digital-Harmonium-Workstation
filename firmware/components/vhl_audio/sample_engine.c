@@ -109,12 +109,8 @@ vhl_err_t vhl_single_voice_note_off(vhl_single_voice_t* pVoice)
     }
 
     if (pVoice->state == VHL_VOICE_STATE_PLAYING) {
-        // State Transition: PLAYING -> RELEASING -> FINISHED -> STOPPED
+        // State Transition: PLAYING -> RELEASING
         pVoice->state = VHL_VOICE_STATE_RELEASING;
-
-        // If sample is not looped or release completes, transition to FINISHED & STOPPED
-        pVoice->state = VHL_VOICE_STATE_FINISHED;
-        pVoice->state = VHL_VOICE_STATE_STOPPED;
     }
 
     return VHL_OK;

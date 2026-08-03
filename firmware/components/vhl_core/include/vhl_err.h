@@ -37,6 +37,10 @@ typedef int32_t vhl_err_t;
 #define VHL_ERR_DMA_UNDERRUN        (-201)
 #define VHL_ERR_SAMPLE_CORRUPT      (-202)
 
+/* Recorder & Event Errors (-300 to -399) */
+#define VHL_ERR_QUEUE_FULL          (-300)
+#define VHL_ERR_RECORDER_INACTIVE   (-301)
+
 /* Error Guard Helper Macro */
 #define VHL_RETURN_ON_ERROR(expr) do { \
     vhl_err_t _err = (expr); \

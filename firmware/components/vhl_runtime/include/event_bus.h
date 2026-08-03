@@ -2,6 +2,7 @@
  * event_bus.h — Inter-Task Queues & Event Bus Engine
  * Project: Digital Harmonium Workstation Firmware
  * Stage 4 — Event Bus Architecture
+ * Stage 11 — Recorder Tap Hook (Event Bus-Driven Recording Architecture)
  * ============================================================================= */
 
 #ifndef EVENT_BUS_H
@@ -58,6 +59,28 @@ typedef struct {
 #define VHL_EVENT_BIT_SD_CARD_MOUNTED (1U << 4)
 #define VHL_EVENT_BIT_SD_CARD_REMOVED (1U << 5)
 #define VHL_EVENT_BIT_SYSTEM_ERROR    (1U << 6)
+
+/* =============================================================================
+ * Stage 11: Recorder Tap Hook
+ * The recorder is the sole consumer of the Event Bus tap.
+ * It never reads hardware inputs directly — all musical events flow through here.
+ * Playback (Stage 12) will replay events back onto the Event Bus via the same path.
+ * ============================================================================= */
+
+/**
+ * Recorder tap callback signature.
+ * Called inside vhl_event_bus_post_key_event() immediately after the event is
+ * enqueued. Must be lock-free and non-blocking (< 1 us execution time).
+ * @param pEvent  Pointer to the key event that was just posted.
+ * @param pCtx    Opaque context pointer supplied during registration (e.g. recorder engine instance).
+ */
+typedef void (*vhl_recorder_tap_fn_t)(const vhl_key_event_t* pEvent, void* pCtx);
+
+/**
+ * Register a recorder tap callback on the Event Bus.
+ * Pass NULL for both arguments to deregister (disable recording tap).
+ */
+vhl_err_t vhl_event_bus_set_recorder_hook(vhl_recorder_tap_fn_t tapFn, void* pCtx);
 
 /* -----------------------------------------------------------------------------
  * Task-Context APIs (Forbidden inside ISRs)

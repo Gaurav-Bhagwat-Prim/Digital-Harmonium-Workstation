@@ -1,7 +1,7 @@
 # ==============================================================================
 # firmware/CMakeLists.txt — Master Build Configuration
 # Project: Digital Harmonium Workstation Firmware
-# Stage 7 — Single Voice Audio Synthesis Engine
+# Stage 9 — Synthesis Runtime Infrastructure
 # ==============================================================================
 cmake_minimum_required(VERSION 3.16)
 
@@ -32,6 +32,8 @@ else()
     add_subdirectory(components/vhl_hal)
     add_subdirectory(components/vhl_runtime)
     add_subdirectory(components/vhl_input)
+    add_subdirectory(components/vhl_storage)
+    add_subdirectory(components/vhl_feature)
     add_subdirectory(components/vhl_audio)
     add_subdirectory(main)
 endif()
