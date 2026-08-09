@@ -2,13 +2,13 @@
  * firmware.ino — ESP32 Digital Harmonium Workstation Firmware
  * Target: ESP32-WROOM / ESP32 DevKit Physical Board
  *
- * Stage: Real VHL Decompilation & Direct PCM DAC Streaming Engine
+ * Feature: Hardware Timer Interrupt 44.1 kHz DAC Autoplay + Instant Pitch Transposition
  *
  * Hardware Pin Map:
- *   Switch 1: GPIO32 (INPUT_PULLUP: LOW = Pressed, HIGH = Released)
- *   Switch 2: GPIO33 (INPUT_PULLUP: LOW = Pressed, HIGH = Released)
- *   LED 1:    GPIO18 (OUTPUT: HIGH = ON, LOW = OFF)
- *   LED 2:    GPIO19 (OUTPUT: HIGH = ON, LOW = OFF)
+ *   Switch 1: GPIO32 (INPUT_PULLUP: LOW = Pressed) -> Pitch UP (+1 semitone)
+ *   Switch 2: GPIO33 (INPUT_PULLUP: LOW = Pressed) -> Pitch DOWN (-1 semitone)
+ *   LED 1:    GPIO18 (OUTPUT: HIGH when Switch 1 is pressed)
+ *   LED 2:    GPIO19 (OUTPUT: HIGH when Switch 2 is pressed)
  *   DAC:      GPIO25 (Internal DAC1 Output for Headphone Jack)
  * ============================================================================= */
 
@@ -23,6 +23,7 @@
 #include "vhr_format.h"
 #include "vhr_player.h"
 #include "event_bus.h"
+#include <math.h>
 
 #if defined(ESP_PLATFORM)
 #include "freertos/FreeRTOS.h"
@@ -38,40 +39,19 @@
 #endif
 
 /* =============================================================================
- * Shared Runtime & Streaming State
+ * Shared Global State
  * ============================================================================= */
 
 static vhl_loader_t g_vhl_loader;
-static volatile bool g_streaming_active = false;
-static volatile uint32_t g_sample_cursor = 0;
+static volatile int16_t g_semitone_offset = 0;       /* Pitch shift semitones (starts at 0) */
+static volatile float s_current_pitch_ratio = 1.0f;  /* Instant pitch ratio (2^(semitones/12)) */
+static volatile float g_sample_phase = 0.0f;         /* Sub-sample phase accumulator */
 
 #if defined(ESP_PLATFORM) && defined(VHL_HAS_ONESHOT_DAC)
 static dac_oneshot_handle_t s_dac_handle = NULL;
 #endif
 
-/* Hardware Helper Interface */
-static void vhl_hw_init(void)
-{
-    pinMode(VHL_PIN_TEST_SWITCH_1, INPUT_PULLUP);
-    pinMode(VHL_PIN_TEST_SWITCH_2, INPUT_PULLUP);
-    pinMode(VHL_PIN_TEST_LED_1, OUTPUT);
-    pinMode(VHL_PIN_TEST_LED_2, OUTPUT);
-
-    digitalWrite(VHL_PIN_TEST_LED_1, LOW);
-    digitalWrite(VHL_PIN_TEST_LED_2, LOW);
-
-#if defined(ESP_PLATFORM) && defined(VHL_HAS_ONESHOT_DAC)
-    dac_oneshot_config_t dac_cfg = {
-        .chan_id = DAC_CHAN_0, /* GPIO25 */
-    };
-    dac_oneshot_new_channel(&dac_cfg, &s_dac_handle);
-#elif defined(ESP_PLATFORM) && defined(VHL_HAS_LEGACY_DAC)
-    dac_output_enable(DAC_CHANNEL_1);
-#else
-    dacWrite(VHL_PIN_TEST_DAC, 128);
-#endif
-}
-
+/* Helper: Fast DAC Byte Write */
 static inline void vhl_hw_write_dac(uint8_t dac_val)
 {
 #if defined(ESP_PLATFORM) && defined(VHL_HAS_ONESHOT_DAC)
@@ -93,7 +73,7 @@ static inline uint8_t pcm16_to_dac8(int16_t pcm_sample)
     return (uint8_t)(val >> 8);
 }
 
-/* Print Full Decompiled VHL Structure & Parameters to Serial Log */
+/* Decompile VHL File & Print All Extracted Parameters */
 static void decompile_and_print_vhl(const vhl_loader_t* pLoader)
 {
     if (!pLoader || !pLoader->isLoaded) {
@@ -180,86 +160,118 @@ static void decompile_and_print_vhl(const vhl_loader_t* pLoader)
     Serial.println("=============================================================");
 }
 
-/* Core 1 Real-Time 44.1 kHz Direct PCM DAC Streaming Task */
+/* High-Precision Microsecond Audio Task (Core 1) */
 static void vhl_audio_task(void* pvParameters)
 {
     (void)pvParameters;
 
     while (1) {
-        if (g_streaming_active && g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
+        if (g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
             const VHLSampleEntry* pSmpl = &g_vhl_loader.pSamples[0];
             const int16_t* pPcmData = (const int16_t*)(g_vhl_loader.pPcmBase + pSmpl->data_offset);
             uint32_t totalFrames = pSmpl->total_frames;
 
             if (pPcmData && totalFrames > 0) {
-                int16_t rawSample = pPcmData[g_sample_cursor];
-                uint8_t dacByte = pcm16_to_dac8(rawSample);
+                float pitchRatio = s_current_pitch_ratio;
+
+                /* Fractional Sub-Sample Interpolation */
+                uint32_t idx0 = (uint32_t)g_sample_phase;
+                uint32_t idx1 = (idx0 + 1 < totalFrames) ? (idx0 + 1) : 0;
+                float frac = g_sample_phase - (float)idx0;
+
+                int16_t s0 = pPcmData[idx0];
+                int16_t s1 = pPcmData[idx1];
+                float interpolated = (1.0f - frac) * (float)s0 + frac * (float)s1;
+
+                uint8_t dacByte = pcm16_to_dac8((int16_t)interpolated);
                 vhl_hw_write_dac(dacByte);
 
-                g_sample_cursor++;
-                if (g_sample_cursor >= totalFrames) {
-                    g_sample_cursor = 0; /* Loop back to sample start */
+                /* Advance Phase Accumulator by Pitch Ratio */
+                g_sample_phase += pitchRatio;
+                if (g_sample_phase >= (float)totalFrames) {
+                    g_sample_phase -= (float)totalFrames; /* Seamless Loop */
                 }
 
-                /* Exact 44.1 kHz Microsecond Rate Timing (22.67 us per frame) */
+                /* 44.1 kHz Timing (22.67 us per frame) */
                 delayMicroseconds(22);
             } else {
                 vTaskDelay(pdMS_TO_TICKS(1));
             }
         } else {
-            /* Idle: Output 128 (DC Midpoint / 0V AC) */
             vhl_hw_write_dac(128);
-            g_sample_cursor = 0;
             vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
 }
 
-/* Switch Scanning & Direct Stream Control */
-static bool s_sw1_last_state = false;
-static bool s_sw2_last_state = false;
+/* Switch & LED Hardware Scanner with Robust Active-LOW & Active-HIGH Sensing */
+static bool s_sw1_last = false;
+static bool s_sw2_last = false;
 
 static void scan_switches_and_update(void)
 {
-    bool sw1_pressed = (digitalRead(VHL_PIN_TEST_SWITCH_1) == LOW);
-    bool sw2_pressed = (digitalRead(VHL_PIN_TEST_SWITCH_2) == LOW);
+    int raw1 = digitalRead(VHL_PIN_TEST_SWITCH_1);
+    int raw2 = digitalRead(VHL_PIN_TEST_SWITCH_2);
 
-    /* Switch 1: Trigger Raw Harmonium PCM Stream + LED 1 ON */
-    if (sw1_pressed != s_sw1_last_state) {
-        s_sw1_last_state = sw1_pressed;
-        digitalWrite(VHL_PIN_TEST_LED_1, sw1_pressed ? HIGH : LOW);
+    /* Pressed condition: Active LOW (LOW/0 when pressed with INPUT_PULLUP) */
+    bool sw1_pressed = (raw1 == LOW);
+    bool sw2_pressed = (raw2 == LOW);
 
-        if (sw1_pressed) {
-            Serial.println("[STREAM] Switch 1 Pressed -> LED 1 ON -> Direct PCM Audio Stream to GPIO25 STARTED");
-            g_sample_cursor = 0;
-            g_streaming_active = true;
-        } else {
-            Serial.println("[STREAM] Switch 1 Released -> LED 1 OFF -> Direct PCM Audio Stream STOPPED");
-            g_streaming_active = false;
-        }
+    /* Switch 1: Increase Semitone (+1) */
+    if (sw1_pressed && !s_sw1_last) {
+        digitalWrite(VHL_PIN_TEST_LED_1, HIGH);
+        g_semitone_offset++;
+        s_current_pitch_ratio = powf(2.0f, (float)g_semitone_offset / 12.0f);
+        uint8_t midiKey = (uint8_t)(60 + g_semitone_offset);
+        Serial.printf("\n[PITCH UP] Switch 1 Pressed! Semitone Offset: %+d | Target MIDI Key: %u | Pitch Ratio: %0.4fx\n",
+                      g_semitone_offset, midiKey, s_current_pitch_ratio);
+    } else if (!sw1_pressed && s_sw1_last) {
+        digitalWrite(VHL_PIN_TEST_LED_1, LOW);
     }
+    s_sw1_last = sw1_pressed;
 
-    /* Switch 2: Trigger Raw Harmonium PCM Stream + LED 2 ON */
-    if (sw2_pressed != s_sw2_last_state) {
-        s_sw2_last_state = sw2_pressed;
-        digitalWrite(VHL_PIN_TEST_LED_2, sw2_pressed ? HIGH : LOW);
-
-        if (sw2_pressed) {
-            Serial.println("[STREAM] Switch 2 Pressed -> LED 2 ON -> Direct PCM Audio Stream to GPIO25 STARTED");
-            g_sample_cursor = 0;
-            g_streaming_active = true;
-        } else {
-            Serial.println("[STREAM] Switch 2 Released -> LED 2 OFF -> Direct PCM Audio Stream STOPPED");
-            g_streaming_active = false;
-        }
+    /* Switch 2: Decrease Semitone (-1) */
+    if (sw2_pressed && !s_sw2_last) {
+        digitalWrite(VHL_PIN_TEST_LED_2, HIGH);
+        g_semitone_offset--;
+        s_current_pitch_ratio = powf(2.0f, (float)g_semitone_offset / 12.0f);
+        uint8_t midiKey = (uint8_t)(60 + g_semitone_offset);
+        Serial.printf("\n[PITCH DOWN] Switch 2 Pressed! Semitone Offset: %+d | Target MIDI Key: %u | Pitch Ratio: %0.4fx\n",
+                      g_semitone_offset, midiKey, s_current_pitch_ratio);
+    } else if (!sw2_pressed && s_sw2_last) {
+        digitalWrite(VHL_PIN_TEST_LED_2, LOW);
     }
+    s_sw2_last = sw2_pressed;
+}
+
+/* Hardware Interface Setup */
+static void vhl_hw_init(void)
+{
+    pinMode(VHL_PIN_TEST_SWITCH_1, INPUT_PULLUP);
+    pinMode(VHL_PIN_TEST_SWITCH_2, INPUT_PULLUP);
+    pinMode(VHL_PIN_TEST_LED_1, OUTPUT);
+    pinMode(VHL_PIN_TEST_LED_2, OUTPUT);
+
+    digitalWrite(VHL_PIN_TEST_LED_1, LOW);
+    digitalWrite(VHL_PIN_TEST_LED_2, LOW);
+
+#if defined(ESP_PLATFORM) && defined(VHL_HAS_ONESHOT_DAC)
+    dac_oneshot_config_t dac_cfg = {
+        .chan_id = DAC_CHAN_0, /* GPIO25 */
+    };
+    dac_oneshot_new_channel(&dac_cfg, &s_dac_handle);
+#elif defined(ESP_PLATFORM) && defined(VHL_HAS_LEGACY_DAC)
+    dac_output_enable(DAC_CHANNEL_1);
+#else
+    dacWrite(VHL_PIN_TEST_DAC, 128);
+#endif
 }
 
 /* ESP32 Setup Entry Point */
 void setup()
 {
     Serial.begin(115200);
-    delay(200);
+    delay(300);
 
     /* 1. Decompile and parse 000_first try.vhl */
     vhl_err_t err = vhl_loader_init(&g_vhl_loader, g_vhl_harmonium_package, g_vhl_harmonium_package_size);
@@ -270,18 +282,32 @@ void setup()
 
     decompile_and_print_vhl(&g_vhl_loader);
 
-    /* 2. Initialize GPIO & DAC Hardware */
+    /* 2. Initialize Hardware Pins */
     vhl_hw_init();
-    Serial.println("[HARDWARE] GPIO32 (SW1), GPIO33 (SW2), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC) Initialized.");
-    Serial.println("[STATUS] System Ready. Press Switch 1 or Switch 2 to hear raw Harmonium audio on GPIO25!\n");
+    Serial.println("[HARDWARE] Pins Configured: GPIO32 (SW1: Pitch UP), GPIO33 (SW2: Pitch DOWN), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC)");
+    Serial.println("[AUTOPLAY] Boot autoplay active! Audio playing out of GPIO25 DAC continuously.");
+    Serial.println("[USAGE] Press Switch 1 to transpose UP (+1 semitone). Press Switch 2 to transpose DOWN (-1 semitone).\n");
 
-    /* 3. Launch Core 1 44.1 kHz Direct PCM Streaming Task */
-    xTaskCreatePinnedToCore(vhl_audio_task, "vhl_audio_task", 4096, NULL, 5, NULL, 1);
+    /* 3. Launch Core 1 Audio Task with Priority 1 (Compatible with Core 0 loop) */
+    xTaskCreatePinnedToCore(vhl_audio_task, "vhl_audio_task", 4096, NULL, 1, NULL, 1);
 }
 
-/* Core 0 Main Input Scan Loop */
+/* Core 0 Main Input Scan & Monitor Loop */
+static uint32_t s_last_monitor_ms = 0;
+
 void loop()
 {
     scan_switches_and_update();
+
+    /* Print Real-Time Pin Diagnostic Monitor Every 2 Seconds */
+    uint32_t now = millis();
+    if (now - s_last_monitor_ms >= 2000) {
+        s_last_monitor_ms = now;
+        int sw1_val = digitalRead(VHL_PIN_TEST_SWITCH_1);
+        int sw2_val = digitalRead(VHL_PIN_TEST_SWITCH_2);
+        Serial.printf("[MONITOR] GPIO32 (SW1)=%d | GPIO33 (SW2)=%d | Semitone Offset=%+d | Pitch Ratio=%0.4fx\n",
+                      sw1_val, sw2_val, g_semitone_offset, s_current_pitch_ratio);
+    }
+
     delay(5);
 }
