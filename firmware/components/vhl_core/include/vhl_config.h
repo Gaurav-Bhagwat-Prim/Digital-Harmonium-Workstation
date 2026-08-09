@@ -82,6 +82,16 @@ extern "C" {
 #define VHL_PIN_LCD_SDA         (21)
 #define VHL_PIN_LCD_SCL         (22)
 
+/* -----------------------------------------------------------------------------
+ * Hardware Validation Test Pin Maps (ESP32 DevKit Workbench)
+ * ----------------------------------------------------------------------------- */
+
+#define VHL_PIN_TEST_SWITCH_1   (32) /* Switch 1 (INPUT_PULLUP: LOW = pressed) */
+#define VHL_PIN_TEST_SWITCH_2   (33) /* Switch 2 (INPUT_PULLUP: LOW = pressed) */
+#define VHL_PIN_TEST_LED_1      (18) /* LED 1 (OUTPUT: HIGH = ON) */
+#define VHL_PIN_TEST_LED_2      (19) /* LED 2 (OUTPUT: HIGH = ON) */
+#define VHL_PIN_TEST_DAC        (25) /* Internal DAC1 Output (GPIO25) */
+
 #ifdef __cplusplus
 }
 #endif

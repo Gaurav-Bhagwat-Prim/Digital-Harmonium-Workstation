@@ -319,6 +319,13 @@ build components/vhl_storage/CMakeFiles/vhl_storage.dir/vhr_player.c.obj: C_COMP
   OBJECT_DIR = components\vhl_storage\CMakeFiles\vhl_storage.dir
   OBJECT_FILE_DIR = components\vhl_storage\CMakeFiles\vhl_storage.dir
 
+build components/vhl_storage/CMakeFiles/vhl_storage.dir/vhl_harmonium_package.c.obj: C_COMPILER__vhl_storage_unscanned_ D$:/TYBSC/TYBSC$ Arduino$ Project/Esp32$ Digital$ Musical$ Workstation/firmware/components/vhl_storage/vhl_harmonium_package.c || cmake_object_order_depends_target_vhl_storage
+  DEP_FILE = components\vhl_storage\CMakeFiles\vhl_storage.dir\vhl_harmonium_package.c.obj.d
+  FLAGS = -std=gnu11 -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter
+  INCLUDES = -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_storage/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_hal/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_runtime/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_audio/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_input/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_feature/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_storage/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_ui/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_core/../vhl_diagnostic/include" -I"D:/TYBSC/TYBSC Arduino Project/Esp32 Digital Musical Workstation/firmware/components/vhl_runtime/include"
+  OBJECT_DIR = components\vhl_storage\CMakeFiles\vhl_storage.dir
+  OBJECT_FILE_DIR = components\vhl_storage\CMakeFiles\vhl_storage.dir
+
 
 # =============================================================================
 # Link build statements for STATIC_LIBRARY target vhl_storage
@@ -327,7 +334,7 @@ build components/vhl_storage/CMakeFiles/vhl_storage.dir/vhr_player.c.obj: C_COMP
 #############################################
 # Link the static library components\vhl_storage\libvhl_storage.a
 
-build components/vhl_storage/libvhl_storage.a: C_STATIC_LIBRARY_LINKER__vhl_storage_ components/vhl_storage/CMakeFiles/vhl_storage.dir/vhl_loader.c.obj components/vhl_storage/CMakeFiles/vhl_storage.dir/recorder_engine.c.obj components/vhl_storage/CMakeFiles/vhl_storage.dir/vhr_player.c.obj || components/vhl_runtime/libvhl_runtime.a
+build components/vhl_storage/libvhl_storage.a: C_STATIC_LIBRARY_LINKER__vhl_storage_ components/vhl_storage/CMakeFiles/vhl_storage.dir/vhl_loader.c.obj components/vhl_storage/CMakeFiles/vhl_storage.dir/recorder_engine.c.obj components/vhl_storage/CMakeFiles/vhl_storage.dir/vhr_player.c.obj components/vhl_storage/CMakeFiles/vhl_storage.dir/vhl_harmonium_package.c.obj || components/vhl_runtime/libvhl_runtime.a
   OBJECT_DIR = components\vhl_storage\CMakeFiles\vhl_storage.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
