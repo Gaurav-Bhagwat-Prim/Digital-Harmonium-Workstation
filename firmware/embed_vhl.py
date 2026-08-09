@@ -1,6 +1,6 @@
 import os
 
-vhl_path = r"d:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\Instruments\Piano\000_first try.vhl"
+vhl_path = r"d:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\Instruments\Harmonium\000_first try.vhl"
 h_path = r"d:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\firmware\components\vhl_storage\include\vhl_harmonium_package.h"
 c_path = r"d:\TYBSC\TYBSC Arduino Project\Esp32 Digital Musical Workstation\firmware\components\vhl_storage\vhl_harmonium_package.c"
 
