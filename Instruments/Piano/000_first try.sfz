@@ -1,0 +1,44 @@
+// Sfz exported from a sf2 file with Polyphone
+// Name      : 
+// Author    : 
+// Copyright : my
+// Date      : 2026/08/09
+// Comment   : lol 
+
+<group>
+lokey=0 hikey=61
+lovel=0 hivel=127
+amp_veltrack=100
+ampeg_attack=0.0399909
+ampeg_decay=0.100017
+ampeg_delay=0.000999942
+ampeg_release=0.179972
+ampeg_sustain=3.16228
+cutoff=4978
+effect1=100
+fil_type=lpf_2p
+fil_veltrack=2400
+fileg_hold=0.801056
+loop_mode=no_loop
+pitch_keycenter=60
+pitcheg_hold=0.801056
+transpose=0
+
+<region> sample=..\samples\single-piano-note-c4.wav
+lokey=0 hikey=127
+lovel=0 hivel=127
+amp_veltrack=100
+ampeg_attack=0.0399909
+ampeg_decay=0.100017
+ampeg_delay=0.000999942
+ampeg_release=0.179972
+ampeg_sustain=100
+effect1=100
+fileg_hold=1.05698
+fileg_holdcc133=0 // sfz v2
+pan=0
+pitch_keycenter=60
+pitcheg_hold=1.05698
+pitcheg_holdcc133=0 // sfz v2
+transpose=0
+volume=0

@@ -32,3 +32,7 @@
 204	324	8079758539331924	main/digital_harmonium_firmware.exe	df0aff5fade1cfc
 39	210	8079760551481868	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	630013cf15514932
 210	374	8079760553194097	main/digital_harmonium_firmware.exe	df0aff5fade1cfc
+22	279	8079908494341013	main/CMakeFiles/digital_harmonium_firmware.dir/main.c.obj	630013cf15514932
+9	301	8079908494210106	components/vhl_storage/CMakeFiles/vhl_storage.dir/vhl_harmonium_package.c.obj	fa1b875d631b0e18
+301	565	8079908497133092	components/vhl_storage/libvhl_storage.a	7863224d05ec4e2e
+565	799	8079908499773003	main/digital_harmonium_firmware.exe	df0aff5fade1cfc
