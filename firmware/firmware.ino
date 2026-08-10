@@ -2,17 +2,18 @@
  * firmware.ino — ESP32 Digital Harmonium Workstation Firmware
  * Target: ESP32-WROOM / ESP32 DevKit Physical Board
  *
- * Feature: 44.1 kHz Deterministic Hardware Timer Interrupt + Triangular Dithering
+ * Feature: Real-Time Sub-Sample Semitone Transposition & Core 1 Audio Task (No ISR Panic)
  *
  * Hardware Pin Map:
- *   Switch 1: GPIO32 (INPUT_PULLUP) -> Re-trigger raw VHL PCM sample from frame 0
- *   Switch 2: GPIO33 (INPUT_PULLUP) -> Re-trigger raw VHL PCM sample from frame 0
- *   LED 1:    GPIO18 (OUTPUT) -> HIGH when Switch 1 is pressed
- *   LED 2:    GPIO19 (OUTPUT) -> HIGH when Switch 2 is pressed
+ *   Switch 1: GPIO32 (INPUT_PULLUP) -> Decrease semitone offset by 1 (-1 semitone) & Re-trigger sample
+ *   Switch 2: GPIO33 (INPUT_PULLUP) -> Increase semitone offset by 1 (+1 semitone) & Re-trigger sample
+ *   LED 1:    GPIO18 (OUTPUT) -> HIGH when Switch 1 (Decrease) is pressed
+ *   LED 2:    GPIO19 (OUTPUT) -> HIGH when Switch 2 (Increase) is pressed
  *   DAC:      GPIO25 (Internal DAC1 Output for Headphone Jack)
  * ============================================================================= */
 
 #include <Arduino.h>
+#include <math.h>
 #include "vhl_types.h"
 #include "vhl_config.h"
 #include "vhl_err.h"
@@ -35,16 +36,17 @@
  * ============================================================================= */
 
 static vhl_loader_t g_vhl_loader;
-static volatile uint32_t g_sample_cursor = 0; /* Direct integer frame index */
-static hw_timer_t * g_audio_timer = NULL;     /* ESP32 Hardware Timer handle */
+
+/* Sub-Sample Fractional Phase Accumulator & Pitch Transposition */
+static volatile float g_sample_phase = 0.0f;       /* Sub-sample position */
+static volatile int   g_semitone_offset = 0;        /* Semitone transpose (-12..+12) */
+static volatile float g_pitch_ratio = 1.0f;         /* pitchRatio = 2^(semitones/12) */
 
 /* Fast 16-to-8 Bit Triangular Noise-Shaping Dither */
 static inline uint8_t pcm16_to_dac8_dither(int16_t pcm_sample)
 {
-    /* Convert 16-bit signed (-32768..+32767) to unsigned 16-bit (0..65535) */
     int32_t val = (int32_t)pcm_sample + 32768;
 
-    /* Generate fast pseudo-random dither (-64..+63) to smooth 8-bit quantization */
     static uint32_t s_dither_state = 123456789U;
     s_dither_state = s_dither_state * 1664525U + 1013904223U;
     int32_t dither = (int32_t)(s_dither_state >> 25) - 64;
@@ -54,6 +56,17 @@ static inline uint8_t pcm16_to_dac8_dither(int16_t pcm_sample)
     if (val > 65535) val = 65535;
 
     return (uint8_t)(val >> 8);
+}
+
+/* Helper to fetch frame sample (Mono or Stereo) */
+static inline float get_frame_sample(const int16_t* pPcm, uint32_t frameIdx, uint8_t channels)
+{
+    if (channels == 2) {
+        int32_t l = (int32_t)pPcm[2 * frameIdx];
+        int32_t r = (int32_t)pPcm[2 * frameIdx + 1];
+        return (float)((l + r) / 2);
+    }
+    return (float)pPcm[frameIdx];
 }
 
 /* Decompile VHL File & Print All Parameters */
@@ -144,44 +157,63 @@ static void decompile_and_print_vhl(const vhl_loader_t* pLoader)
     Serial.println("=============================================================");
 }
 
-/* 100% Deterministic 44.1 kHz Hardware Timer Interrupt Handler (Zero Jitter) */
-void IRAM_ATTR onAudioTimer()
+/* Core 1 Real-Time Audio Task (Safe FreeRTOS Task Execution) */
+static void vhl_audio_task(void* pvParameters)
 {
-    if (g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
-        const VHLSampleEntry* pSmpl = &g_vhl_loader.pSamples[0];
-        const int16_t* pPcmData = (const int16_t*)(g_vhl_loader.pPcmBase + pSmpl->data_offset);
-        uint32_t totalFrames = pSmpl->total_frames;
-        uint8_t channels = (pSmpl->channels > 0) ? pSmpl->channels : 1;
+    (void)pvParameters;
 
-        if (pPcmData && totalFrames > 0) {
-            int16_t rawSample = 0;
+    while (1) {
+        if (g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
+            const VHLSampleEntry* pSmpl = &g_vhl_loader.pSamples[0];
+            const int16_t* pPcmData = (const int16_t*)(g_vhl_loader.pPcmBase + pSmpl->data_offset);
+            uint32_t totalFrames = pSmpl->total_frames;
+            uint8_t channels = (pSmpl->channels > 0) ? pSmpl->channels : 1;
 
-            if (channels == 2) {
-                uint32_t leftIdx = 2 * g_sample_cursor;
-                uint32_t rightIdx = leftIdx + 1;
-                int32_t leftSample = (int32_t)pPcmData[leftIdx];
-                int32_t rightSample = (int32_t)pPcmData[rightIdx];
-                rawSample = (int16_t)((leftSample + rightSample) / 2);
+            if (pPcmData && totalFrames > 0) {
+                uint32_t idx0 = (uint32_t)g_sample_phase;
+                uint32_t idx1 = idx0 + 1;
+                float frac = g_sample_phase - (float)idx0;
+
+                if (idx0 >= totalFrames) {
+                    g_sample_phase = 0.0f;
+                    idx0 = 0;
+                    idx1 = 1;
+                }
+                if (idx1 >= totalFrames) {
+                    idx1 = 0;
+                }
+
+                /* Sub-sample linear interpolation for smooth pitch transposition */
+                float s0 = get_frame_sample(pPcmData, idx0, channels);
+                float s1 = get_frame_sample(pPcmData, idx1, channels);
+                float interpolated = (1.0f - frac) * s0 + frac * s1;
+
+                int16_t rawSample = (int16_t)interpolated;
+
+                /* Apply Triangular Dither to smooth 8-bit DAC quantization */
+                uint8_t dacByte = pcm16_to_dac8_dither(rawSample);
+
+                /* Write directly to GPIO25 DAC */
+                dacWrite(VHL_PIN_TEST_DAC, dacByte);
+
+                /* Advance sub-sample phase accumulator by pitch ratio */
+                g_sample_phase += g_pitch_ratio;
+
+                delayMicroseconds(10);
             } else {
-                rawSample = pPcmData[g_sample_cursor];
+                vTaskDelay(pdMS_TO_TICKS(1));
             }
-
-            /* Apply Triangular Dither to smooth 8-bit DAC quantization */
-            uint8_t dacByte = pcm16_to_dac8_dither(rawSample);
-
-            /* Hardware DAC Write */
-            dacWrite(VHL_PIN_TEST_DAC, dacByte);
-
-            /* Advance frame cursor by 1 frame */
-            g_sample_cursor++;
-            if (g_sample_cursor >= totalFrames) {
-                g_sample_cursor = 0; /* Loop back to start */
-            }
+        } else {
+            dacWrite(VHL_PIN_TEST_DAC, 128);
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
 }
 
-/* Switch & LED Hardware Scanner */
+/* Switch Scanner:
+ * Switch 1 (GPIO32): Decrease semitones by 1 (-1 semitone) & Re-trigger from frame 0
+ * Switch 2 (GPIO33): Increase semitones by 1 (+1 semitone) & Re-trigger from frame 0
+ */
 static bool s_sw1_last = false;
 static bool s_sw2_last = false;
 
@@ -193,23 +225,33 @@ static void scan_switches_and_update(void)
     bool sw1_pressed = (raw1 == LOW);
     bool sw2_pressed = (raw2 == LOW);
 
-    /* Switch 1: Re-trigger raw VHL PCM sample from frame 0 */
+    /* Switch 1: Decrease Semitone Offset by 1 & Re-trigger sample */
     if (sw1_pressed && !s_sw1_last) {
+        if (g_semitone_offset > -12) {
+            g_semitone_offset--;
+        }
+        g_pitch_ratio = powf(2.0f, (float)g_semitone_offset / 12.0f);
+        g_sample_phase = 0.0f; /* Re-trigger sample from frame 0 */
         digitalWrite(VHL_PIN_TEST_LED_1, HIGH);
         digitalWrite(VHL_PIN_TEST_LED_2, LOW);
-        g_sample_cursor = 0;
-        Serial.println("\n[SWITCH 1] Re-triggered Raw VHL PCM Sample from Frame 0 | LED 1 ON | LED 2 OFF");
+        Serial.printf("\n[SWITCH 1 - SEMITONE DOWN] Offset: %d semitones | Pitch Ratio: %0.6fx | LED 1 ON | LED 2 OFF\n",
+                      g_semitone_offset, g_pitch_ratio);
     } else if (!sw1_pressed && s_sw1_last && !sw2_pressed) {
         digitalWrite(VHL_PIN_TEST_LED_1, LOW);
     }
     s_sw1_last = sw1_pressed;
 
-    /* Switch 2: Re-trigger raw VHL PCM sample from frame 0 */
+    /* Switch 2: Increase Semitone Offset by 1 & Re-trigger sample */
     if (sw2_pressed && !s_sw2_last) {
+        if (g_semitone_offset < 12) {
+            g_semitone_offset++;
+        }
+        g_pitch_ratio = powf(2.0f, (float)g_semitone_offset / 12.0f);
+        g_sample_phase = 0.0f; /* Re-trigger sample from frame 0 */
         digitalWrite(VHL_PIN_TEST_LED_2, HIGH);
         digitalWrite(VHL_PIN_TEST_LED_1, LOW);
-        g_sample_cursor = 0;
-        Serial.println("\n[SWITCH 2] Re-triggered Raw VHL PCM Sample from Frame 0 | LED 2 ON | LED 1 OFF");
+        Serial.printf("\n[SWITCH 2 - SEMITONE UP] Offset: %d semitones | Pitch Ratio: %0.6fx | LED 2 ON | LED 1 OFF\n",
+                      g_semitone_offset, g_pitch_ratio);
     } else if (!sw2_pressed && s_sw2_last && !sw1_pressed) {
         digitalWrite(VHL_PIN_TEST_LED_2, LOW);
     }
@@ -229,18 +271,6 @@ static void vhl_hw_init(void)
 
     /* Power up DAC hardware on GPIO25 */
     dacWrite(VHL_PIN_TEST_DAC, 128);
-
-    /* Configure 100% Deterministic 44.1 kHz Hardware Timer Interrupt (Zero Jitter) */
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-    g_audio_timer = timerBegin(1000000); /* 1 MHz clock */
-    timerAttachInterrupt(g_audio_timer, &onAudioTimer);
-    timerAlarm(g_audio_timer, 23, true, 0); /* 22.67 us period = 44.1 kHz */
-#else
-    g_audio_timer = timerBegin(0, 80, true); /* 1 MHz clock */
-    timerAttachInterrupt(g_audio_timer, &onAudioTimer, true);
-    timerAlarmWrite(g_audio_timer, 23, true);
-    timerAlarmEnable(g_audio_timer);
-#endif
 }
 
 /* ESP32 Setup Entry Point */
@@ -258,11 +288,14 @@ void setup()
 
     decompile_and_print_vhl(&g_vhl_loader);
 
-    /* 2. Initialize Hardware Pins & 44.1 kHz Hardware Timer Interrupt */
+    /* 2. Initialize Hardware Pins */
     vhl_hw_init();
-    Serial.println("[HARDWARE] Pins Configured: GPIO32 (SW1), GPIO33 (SW2), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC)");
-    Serial.println("[TIMER] 100% Deterministic 44.1 kHz Hardware Timer Interrupt & Dithering Initialized.");
-    Serial.println("[USAGE] Audio streams out of GPIO25 DAC with zero timing jitter. Press SW1 or SW2 to restart sample from Frame 0.\n");
+    Serial.println("[HARDWARE] Pins Configured: GPIO32 (SW1: Semitone -1), GPIO33 (SW2: Semitone +1), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC)");
+    Serial.println("[MODE] REAL-TIME SEMITONE TRANSPOSITION ENGINE INITIALIZED (Core 1 Task).");
+    Serial.println("[USAGE] Press SW1 to decrease pitch (-1 semitone) & restart. Press SW2 to increase pitch (+1 semitone) & restart.\n");
+
+    /* 3. Launch Core 1 Audio Task with Priority 1 */
+    xTaskCreatePinnedToCore(vhl_audio_task, "vhl_audio_task", 4096, NULL, 1, NULL, 1);
 }
 
 /* Core 0 Main Input Scan & Real-Time Pin Monitor */
@@ -278,8 +311,8 @@ void loop()
         s_last_monitor_ms = now;
         int sw1_val = digitalRead(VHL_PIN_TEST_SWITCH_1);
         int sw2_val = digitalRead(VHL_PIN_TEST_SWITCH_2);
-        Serial.printf("[MONITOR] GPIO32 (SW1)=%d | GPIO33 (SW2)=%d | Sample Cursor Frame=%u / %u\n",
-                      sw1_val, sw2_val, (unsigned int)g_sample_cursor, 
+        Serial.printf("[MONITOR] GPIO32 (SW1)=%d | GPIO33 (SW2)=%d | Semitones: %d | Pitch Ratio: %0.6fx | Frame: %u / %u\n",
+                      sw1_val, sw2_val, g_semitone_offset, g_pitch_ratio, (unsigned int)g_sample_phase,
                       g_vhl_loader.isLoaded ? (unsigned int)g_vhl_loader.pSamples[0].total_frames : 0);
     }
 
