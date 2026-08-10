@@ -1,0 +1,24 @@
+// Sfz exported from a sf2 file with Polyphone
+// Name      : 
+// Author    : 
+// Copyright : 
+// Date      : 2026/08/10
+// Comment   : 
+
+<group>
+amp_veltrack=100
+ampeg_attack=0.000999942
+cutoff=4978
+fil_type=lpf_2p
+fil_veltrack=2400
+loop_mode=loop_continuous
+
+<region> sample=..\samples\80bpm_oWW3QEmx.wav
+amp_veltrack=100
+ampeg_delay=0.100017
+loop_end=378376
+loop_mode=loop_continuous
+loop_start=0
+pan=-1
+pitch_keycenter=48
+volume=0

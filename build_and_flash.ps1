@@ -26,7 +26,7 @@ Write-Host "`n=============================================================" -Fo
 Write-Host " STEP 2: Compiling Firmware for ESP32 Target..." -ForegroundColor Yellow
 Write-Host "=============================================================" -ForegroundColor Cyan
 Set-Location $FirmwareDir
-& $ArduinoCli compile --fqbn esp32:esp32:esp32 --export-binaries --build-property 'build.extra_flags="-Icomponents/vhl_core/include" "-Icomponents/vhl_hal/include" "-Icomponents/vhl_runtime/include" "-Icomponents/vhl_input/include" "-Icomponents/vhl_storage/include" "-Icomponents/vhl_feature/include" "-Icomponents/vhl_audio/include" "-Icomponents/vhl_ui/include"' "$FirmwareDir"
+& $ArduinoCli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --export-binaries --build-property 'build.extra_flags="-Icomponents/vhl_core/include" "-Icomponents/vhl_hal/include" "-Icomponents/vhl_runtime/include" "-Icomponents/vhl_input/include" "-Icomponents/vhl_storage/include" "-Icomponents/vhl_feature/include" "-Icomponents/vhl_audio/include" "-Icomponents/vhl_ui/include"' "$FirmwareDir"
 
 Write-Host "`n=============================================================" -ForegroundColor Cyan
 Write-Host " STEP 3: Flashing Firmware to ESP32 on $Port..." -ForegroundColor Yellow

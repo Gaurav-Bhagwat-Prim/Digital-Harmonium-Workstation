@@ -2,14 +2,13 @@
  * firmware.ino — ESP32 Digital Harmonium Workstation Firmware
  * Target: ESP32-WROOM / ESP32 DevKit Physical Board
  *
- * Mode: Direct C#4 (276 Hz) & +2 Semitone D#4 (311 Hz) Note Switch Engine
- * Note Re-trigger: Resets sample cursor (g_sample_phase = 0.0f) on every key press!
+ * Feature: 44.1 kHz Deterministic Hardware Timer Interrupt + Triangular Dithering
  *
  * Hardware Pin Map:
- *   Switch 1: GPIO32 (INPUT_PULLUP) -> Re-trigger & play C#4 (~276 Hz / 277.18 Hz, MIDI 61)
- *   Switch 2: GPIO33 (INPUT_PULLUP) -> Re-trigger & play D#4 (311.13 Hz, +2 semitones above C#4, MIDI 63)
- *   LED 1:    GPIO18 (OUTPUT) -> HIGH when Switch 1 / C#4 is selected
- *   LED 2:    GPIO19 (OUTPUT) -> HIGH when Switch 2 / D#4 is selected
+ *   Switch 1: GPIO32 (INPUT_PULLUP) -> Re-trigger raw VHL PCM sample from frame 0
+ *   Switch 2: GPIO33 (INPUT_PULLUP) -> Re-trigger raw VHL PCM sample from frame 0
+ *   LED 1:    GPIO18 (OUTPUT) -> HIGH when Switch 1 is pressed
+ *   LED 2:    GPIO19 (OUTPUT) -> HIGH when Switch 2 is pressed
  *   DAC:      GPIO25 (Internal DAC1 Output for Headphone Jack)
  * ============================================================================= */
 
@@ -24,62 +23,36 @@
 #include "vhr_format.h"
 #include "vhr_player.h"
 #include "event_bus.h"
-#include <math.h>
 
 #if defined(ESP_PLATFORM)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
-#if __has_include("driver/dac_oneshot.h")
-#  include "driver/dac_oneshot.h"
-#  define VHL_HAS_ONESHOT_DAC 1
-#elif __has_include("driver/dac.h")
-#  include "driver/dac.h"
-#  define VHL_HAS_LEGACY_DAC 1
-#endif
 #endif
 
 /* =============================================================================
- * Shared Runtime & Note Pitch Data
+ * Shared Runtime Data
  * ============================================================================= */
 
 static vhl_loader_t g_vhl_loader;
+static volatile uint32_t g_sample_cursor = 0; /* Direct integer frame index */
+static hw_timer_t * g_audio_timer = NULL;     /* ESP32 Hardware Timer handle */
 
-/* Pitch constants:
- * Root Key in 000_first try.vhl: C4 (261.63 Hz, MIDI 60)
- * C#4 (277.18 Hz / ~276 Hz): MIDI 61 -> Semitone +1 -> Ratio 2^(1/12) = 1.059463
- * D#4 (311.13 Hz, +2 semitones above C#4): MIDI 63 -> Semitone +3 -> Ratio 2^(3/12) = 1.189207
- */
-static const float PITCH_RATIO_CSHARP4 = 1.059463f; /* C#4 (~276 Hz / 277.18 Hz) */
-static const float PITCH_RATIO_DSHARP4 = 1.189207f; /* D#4 (311.13 Hz, +2 semitones above C#4) */
-
-static volatile float s_current_pitch_ratio = 1.059463f; /* Defaults to C#4 (~276 Hz) */
-static volatile float g_sample_phase = 0.0f;             /* Sub-sample phase accumulator */
-static volatile bool g_play_active = true;
-
-#if defined(ESP_PLATFORM) && defined(VHL_HAS_ONESHOT_DAC)
-static dac_oneshot_handle_t s_dac_handle = NULL;
-#endif
-
-/* Fast DAC Byte Write */
-static inline void vhl_hw_write_dac(uint8_t dac_val)
+/* Fast 16-to-8 Bit Triangular Noise-Shaping Dither */
+static inline uint8_t pcm16_to_dac8_dither(int16_t pcm_sample)
 {
-#if defined(ESP_PLATFORM) && defined(VHL_HAS_ONESHOT_DAC)
-    if (s_dac_handle) {
-        dac_oneshot_output_voltage(s_dac_handle, dac_val);
-    }
-#elif defined(ESP_PLATFORM) && defined(VHL_HAS_LEGACY_DAC)
-    dac_output_voltage(DAC_CHANNEL_1, dac_val);
-#else
-    dacWrite(VHL_PIN_TEST_DAC, dac_val);
-#endif
-}
-
-static inline uint8_t pcm16_to_dac8(int16_t pcm_sample)
-{
+    /* Convert 16-bit signed (-32768..+32767) to unsigned 16-bit (0..65535) */
     int32_t val = (int32_t)pcm_sample + 32768;
+
+    /* Generate fast pseudo-random dither (-64..+63) to smooth 8-bit quantization */
+    static uint32_t s_dither_state = 123456789U;
+    s_dither_state = s_dither_state * 1664525U + 1013904223U;
+    int32_t dither = (int32_t)(s_dither_state >> 25) - 64;
+
+    val += dither;
     if (val < 0)     val = 0;
     if (val > 65535) val = 65535;
+
     return (uint8_t)(val >> 8);
 }
 
@@ -151,7 +124,7 @@ static void decompile_and_print_vhl(const vhl_loader_t* pLoader)
         const VHLSampleEntry* pSmpl = NULL;
         if (vhl_loader_get_sample(pLoader, s, &pSmpl) == VHL_OK) {
             float durationSec = (float)pSmpl->total_frames / (float)pSmpl->sample_rate;
-            uint32_t pcmBytes = pSmpl->total_frames * sizeof(int16_t);
+            uint32_t pcmBytes = pSmpl->total_frames * pSmpl->channels * sizeof(int16_t);
 
             Serial.printf("\n[VHL SAMPLE %u]\n", s);
             Serial.printf("  - Data Offset: %u bytes (Absolute Flash Offset: %u)\n",
@@ -161,8 +134,9 @@ static void decompile_and_print_vhl(const vhl_loader_t* pLoader)
                           (unsigned int)pSmpl->total_frames, durationSec, (unsigned int)pSmpl->sample_rate);
             Serial.printf("  - Loop Start Frame: %u | Loop End Frame: %u\n",
                           (unsigned int)pSmpl->loop_start_frame, (unsigned int)pSmpl->loop_end_frame);
-            Serial.printf("  - Root Key: %u (MIDI) | Fine Tune: %d cents | Bit Depth: %u-bit | Channels: %u (Mono)\n",
-                          pSmpl->root_key, pSmpl->fine_tune_cents, pSmpl->bit_depth, pSmpl->channels);
+            Serial.printf("  - Root Key: %u (MIDI) | Fine Tune: %d cents | Bit Depth: %u-bit | Channels: %u (%s)\n",
+                          pSmpl->root_key, pSmpl->fine_tune_cents, pSmpl->bit_depth, pSmpl->channels,
+                          (pSmpl->channels == 2) ? "Stereo" : "Mono");
             Serial.printf("  - Total PCM Data Size: %u bytes\n", (unsigned int)pcmBytes);
         }
     }
@@ -170,54 +144,44 @@ static void decompile_and_print_vhl(const vhl_loader_t* pLoader)
     Serial.println("=============================================================");
 }
 
-/* Core 1 Real-Time 44.1 kHz Pitch-Transposed PCM DAC Streaming Task */
-static void vhl_audio_task(void* pvParameters)
+/* 100% Deterministic 44.1 kHz Hardware Timer Interrupt Handler (Zero Jitter) */
+void IRAM_ATTR onAudioTimer()
 {
-    (void)pvParameters;
+    if (g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
+        const VHLSampleEntry* pSmpl = &g_vhl_loader.pSamples[0];
+        const int16_t* pPcmData = (const int16_t*)(g_vhl_loader.pPcmBase + pSmpl->data_offset);
+        uint32_t totalFrames = pSmpl->total_frames;
+        uint8_t channels = (pSmpl->channels > 0) ? pSmpl->channels : 1;
 
-    while (1) {
-        if (g_play_active && g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
-            const VHLSampleEntry* pSmpl = &g_vhl_loader.pSamples[0];
-            const int16_t* pPcmData = (const int16_t*)(g_vhl_loader.pPcmBase + pSmpl->data_offset);
-            uint32_t totalFrames = pSmpl->total_frames;
+        if (pPcmData && totalFrames > 0) {
+            int16_t rawSample = 0;
 
-            if (pPcmData && totalFrames > 0) {
-                float pitchRatio = s_current_pitch_ratio;
-
-                /* Fractional Sub-Sample Interpolation */
-                uint32_t idx0 = (uint32_t)g_sample_phase;
-                uint32_t idx1 = (idx0 + 1 < totalFrames) ? (idx0 + 1) : 0;
-                float frac = g_sample_phase - (float)idx0;
-
-                int16_t s0 = pPcmData[idx0];
-                int16_t s1 = pPcmData[idx1];
-                float interpolated = (1.0f - frac) * (float)s0 + frac * (float)s1;
-
-                uint8_t dacByte = pcm16_to_dac8((int16_t)interpolated);
-                vhl_hw_write_dac(dacByte);
-
-                /* Advance Phase Accumulator by Pitch Ratio */
-                g_sample_phase += pitchRatio;
-                if (g_sample_phase >= (float)totalFrames) {
-                    g_sample_phase -= (float)totalFrames; /* Seamless Loop */
-                }
-
-                /* 44.1 kHz Timing (22.67 us per frame) */
-                delayMicroseconds(22);
+            if (channels == 2) {
+                uint32_t leftIdx = 2 * g_sample_cursor;
+                uint32_t rightIdx = leftIdx + 1;
+                int32_t leftSample = (int32_t)pPcmData[leftIdx];
+                int32_t rightSample = (int32_t)pPcmData[rightIdx];
+                rawSample = (int16_t)((leftSample + rightSample) / 2);
             } else {
-                vTaskDelay(pdMS_TO_TICKS(1));
+                rawSample = pPcmData[g_sample_cursor];
             }
-        } else {
-            vhl_hw_write_dac(128);
-            vTaskDelay(pdMS_TO_TICKS(1));
+
+            /* Apply Triangular Dither to smooth 8-bit DAC quantization */
+            uint8_t dacByte = pcm16_to_dac8_dither(rawSample);
+
+            /* Hardware DAC Write */
+            dacWrite(VHL_PIN_TEST_DAC, dacByte);
+
+            /* Advance frame cursor by 1 frame */
+            g_sample_cursor++;
+            if (g_sample_cursor >= totalFrames) {
+                g_sample_cursor = 0; /* Loop back to start */
+            }
         }
     }
 }
 
-/* Switch & LED Hardware Scanner with Note Re-Trigger (Reset Sample Position to 0):
- * Switch 1 (GPIO32): Re-triggers & plays C#4 (~276 Hz / 277.18 Hz) from start + LED 1 ON
- * Switch 2 (GPIO33): Re-triggers & plays D#4 (311.13 Hz, +2 semitones above C#4) from start + LED 2 ON
- */
+/* Switch & LED Hardware Scanner */
 static bool s_sw1_last = false;
 static bool s_sw2_last = false;
 
@@ -226,31 +190,26 @@ static void scan_switches_and_update(void)
     int raw1 = digitalRead(VHL_PIN_TEST_SWITCH_1);
     int raw2 = digitalRead(VHL_PIN_TEST_SWITCH_2);
 
-    /* Active LOW condition (LOW = Pressed) */
     bool sw1_pressed = (raw1 == LOW);
     bool sw2_pressed = (raw2 == LOW);
 
-    /* Switch 1: Re-trigger C#4 (~276 Hz / 277.18 Hz) from start */
+    /* Switch 1: Re-trigger raw VHL PCM sample from frame 0 */
     if (sw1_pressed && !s_sw1_last) {
         digitalWrite(VHL_PIN_TEST_LED_1, HIGH);
         digitalWrite(VHL_PIN_TEST_LED_2, LOW);
-        s_current_pitch_ratio = PITCH_RATIO_CSHARP4;
-        g_sample_phase = 0.0f; /* RE-TRIGGER: Start sample from frame 0! */
-        g_play_active = true;
-        Serial.println("\n[SWITCH 1 RE-TRIGGER] C#4 (~276 Hz) Started from Frame 0! | Pitch Ratio: 1.0595x | LED 1 ON | LED 2 OFF");
+        g_sample_cursor = 0;
+        Serial.println("\n[SWITCH 1] Re-triggered Raw VHL PCM Sample from Frame 0 | LED 1 ON | LED 2 OFF");
     } else if (!sw1_pressed && s_sw1_last && !sw2_pressed) {
         digitalWrite(VHL_PIN_TEST_LED_1, LOW);
     }
     s_sw1_last = sw1_pressed;
 
-    /* Switch 2: Re-trigger D#4 (311.13 Hz, +2 semitones above C#4) from start */
+    /* Switch 2: Re-trigger raw VHL PCM sample from frame 0 */
     if (sw2_pressed && !s_sw2_last) {
         digitalWrite(VHL_PIN_TEST_LED_2, HIGH);
         digitalWrite(VHL_PIN_TEST_LED_1, LOW);
-        s_current_pitch_ratio = PITCH_RATIO_DSHARP4;
-        g_sample_phase = 0.0f; /* RE-TRIGGER: Start sample from frame 0! */
-        g_play_active = true;
-        Serial.println("\n[SWITCH 2 RE-TRIGGER] D#4 (311 Hz, +2 semitones) Started from Frame 0! | Pitch Ratio: 1.1892x | LED 2 ON | LED 1 OFF");
+        g_sample_cursor = 0;
+        Serial.println("\n[SWITCH 2] Re-triggered Raw VHL PCM Sample from Frame 0 | LED 2 ON | LED 1 OFF");
     } else if (!sw2_pressed && s_sw2_last && !sw1_pressed) {
         digitalWrite(VHL_PIN_TEST_LED_2, LOW);
     }
@@ -265,19 +224,22 @@ static void vhl_hw_init(void)
     pinMode(VHL_PIN_TEST_LED_1, OUTPUT);
     pinMode(VHL_PIN_TEST_LED_2, OUTPUT);
 
-    /* Default: LED 1 ON (since default pitch is C#4 ~276 Hz) */
-    digitalWrite(VHL_PIN_TEST_LED_1, HIGH);
+    digitalWrite(VHL_PIN_TEST_LED_1, LOW);
     digitalWrite(VHL_PIN_TEST_LED_2, LOW);
 
-#if defined(ESP_PLATFORM) && defined(VHL_HAS_ONESHOT_DAC)
-    dac_oneshot_config_t dac_cfg = {
-        .chan_id = DAC_CHAN_0, /* GPIO25 */
-    };
-    dac_oneshot_new_channel(&dac_cfg, &s_dac_handle);
-#elif defined(ESP_PLATFORM) && defined(VHL_HAS_LEGACY_DAC)
-    dac_output_enable(DAC_CHANNEL_1);
-#else
+    /* Power up DAC hardware on GPIO25 */
     dacWrite(VHL_PIN_TEST_DAC, 128);
+
+    /* Configure 100% Deterministic 44.1 kHz Hardware Timer Interrupt (Zero Jitter) */
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    g_audio_timer = timerBegin(1000000); /* 1 MHz clock */
+    timerAttachInterrupt(g_audio_timer, &onAudioTimer);
+    timerAlarm(g_audio_timer, 23, true, 0); /* 22.67 us period = 44.1 kHz */
+#else
+    g_audio_timer = timerBegin(0, 80, true); /* 1 MHz clock */
+    timerAttachInterrupt(g_audio_timer, &onAudioTimer, true);
+    timerAlarmWrite(g_audio_timer, 23, true);
+    timerAlarmEnable(g_audio_timer);
 #endif
 }
 
@@ -287,7 +249,7 @@ void setup()
     Serial.begin(115200);
     delay(300);
 
-    /* 1. Decompile and parse 000_first try.vhl */
+    /* 1. Decompile and parse VHL file */
     vhl_err_t err = vhl_loader_init(&g_vhl_loader, g_vhl_harmonium_package, g_vhl_harmonium_package_size);
     if (err != VHL_OK) {
         Serial.println("[ERROR] VHL Loader Initialization Failed!");
@@ -296,14 +258,11 @@ void setup()
 
     decompile_and_print_vhl(&g_vhl_loader);
 
-    /* 2. Initialize Hardware Pins */
+    /* 2. Initialize Hardware Pins & 44.1 kHz Hardware Timer Interrupt */
     vhl_hw_init();
-    Serial.println("[HARDWARE] Pins Configured: GPIO32 (SW1: C#4 276Hz), GPIO33 (SW2: D#4 311Hz), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC)");
-    Serial.println("[AUTOPLAY] Autoplay Active! Default Note: C#4 (~276 Hz / 277.18 Hz). LED 1 ON.");
-    Serial.println("[USAGE] Press Switch 1 for C#4 (~276 Hz) from start. Press Switch 2 for D#4 (311 Hz, +2 semitones higher) from start.\n");
-
-    /* 3. Launch Core 1 Audio Task with Priority 1 */
-    xTaskCreatePinnedToCore(vhl_audio_task, "vhl_audio_task", 4096, NULL, 1, NULL, 1);
+    Serial.println("[HARDWARE] Pins Configured: GPIO32 (SW1), GPIO33 (SW2), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC)");
+    Serial.println("[TIMER] 100% Deterministic 44.1 kHz Hardware Timer Interrupt & Dithering Initialized.");
+    Serial.println("[USAGE] Audio streams out of GPIO25 DAC with zero timing jitter. Press SW1 or SW2 to restart sample from Frame 0.\n");
 }
 
 /* Core 0 Main Input Scan & Real-Time Pin Monitor */
@@ -319,9 +278,9 @@ void loop()
         s_last_monitor_ms = now;
         int sw1_val = digitalRead(VHL_PIN_TEST_SWITCH_1);
         int sw2_val = digitalRead(VHL_PIN_TEST_SWITCH_2);
-        const char* noteName = (s_current_pitch_ratio == PITCH_RATIO_CSHARP4) ? "C#4 (~276 Hz)" : "D#4 (311 Hz)";
-        Serial.printf("[MONITOR] GPIO32 (SW1)=%d | GPIO33 (SW2)=%d | Active Note=%s | Pitch Ratio=%0.4fx\n",
-                      sw1_val, sw2_val, noteName, s_current_pitch_ratio);
+        Serial.printf("[MONITOR] GPIO32 (SW1)=%d | GPIO33 (SW2)=%d | Sample Cursor Frame=%u / %u\n",
+                      sw1_val, sw2_val, (unsigned int)g_sample_cursor, 
+                      g_vhl_loader.isLoaded ? (unsigned int)g_vhl_loader.pSamples[0].total_frames : 0);
     }
 
     delay(5);

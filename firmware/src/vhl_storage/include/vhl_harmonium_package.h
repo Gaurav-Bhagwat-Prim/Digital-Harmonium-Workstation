@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-extern const uint8_t g_vhl_harmonium_package[983864];
+extern const uint8_t g_vhl_harmonium_package[1514308];
 extern const size_t g_vhl_harmonium_package_size;
 
 #ifdef __cplusplus
