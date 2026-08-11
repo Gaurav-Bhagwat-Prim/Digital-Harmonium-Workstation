@@ -2,17 +2,21 @@
  * firmware.ino — ESP32 Digital Harmonium Workstation Firmware
  * Target: ESP32-WROOM / ESP32 DevKit Physical Board
  *
- * Feature: Real-Time Sub-Sample Semitone Transposition & Core 1 Audio Task (No ISR Panic)
+ * Feature: 
+ *   1. 200ms Audio Loop Restart Delay
+ *   2. Ektaal 12-Matra Visualization with Sam, Khali, and Taali (1st, 5th, 9th, 11th) Custom Glyphs
  *
- * Hardware Pin Map:
- *   Switch 1: GPIO32 (INPUT_PULLUP) -> Decrease semitone offset by 1 (-1 semitone) & Re-trigger sample
- *   Switch 2: GPIO33 (INPUT_PULLUP) -> Increase semitone offset by 1 (+1 semitone) & Re-trigger sample
- *   LED 1:    GPIO18 (OUTPUT) -> HIGH when Switch 1 (Decrease) is pressed
- *   LED 2:    GPIO19 (OUTPUT) -> HIGH when Switch 2 (Increase) is pressed
- *   DAC:      GPIO25 (Internal DAC1 Output for Headphone Jack)
+ * Hardware Map:
+ *   I2C LCD:   SDA = GPIO21, SCL = GPIO22 (PCF8574 HD44780 16x2 LCD @ VIN 5V)
+ *   Switch 1:  GPIO32 (INPUT_PULLUP) -> Press to transition to EKTAAL / Re-trigger
+ *   Switch 2:  GPIO33 (INPUT_PULLUP) -> Test input
+ *   LED 1:     GPIO18 (OUTPUT) -> HIGH when Switch 1 is pressed
+ *   LED 2:     GPIO19 (OUTPUT) -> HIGH when Switch 2 is pressed
+ *   DAC:       GPIO25 (Internal DAC1 Output for Headphone Jack)
  * ============================================================================= */
 
 #include <Arduino.h>
+#include <Wire.h>
 #include <math.h>
 #include "vhl_types.h"
 #include "vhl_config.h"
@@ -32,15 +36,173 @@
 #endif
 
 /* =============================================================================
- * Shared Runtime Data
+ * 16x2 I2C HD44780 LCD Driver (Self-Contained PCF8574 Protocol)
  * ============================================================================= */
+
+class I2C_LCD {
+private:
+    uint8_t _addr;
+    uint8_t _backlight;
+
+    void writeNibble(uint8_t nibble, uint8_t rs) {
+        uint8_t data = (nibble & 0xF0) | _backlight | rs;
+        Wire.beginTransmission(_addr);
+        Wire.write(data | 0x04); // EN = 1
+        Wire.endTransmission();
+        delayMicroseconds(1);
+        Wire.beginTransmission(_addr);
+        Wire.write(data & ~0x04); // EN = 0
+        Wire.endTransmission();
+        delayMicroseconds(50);
+    }
+
+    void sendByte(uint8_t val, uint8_t rs) {
+        writeNibble(val & 0xF0, rs);
+        writeNibble((val << 4) & 0xF0, rs);
+    }
+
+public:
+    I2C_LCD(uint8_t addr = 0x27) : _addr(addr), _backlight(0x08) {}
+
+    uint8_t getAddress() const { return _addr; }
+
+    bool begin(int sda = 21, int scl = 22) {
+        Wire.begin(sda, scl);
+        delay(100); // Allow 5V power domain to stabilize
+        
+        /* Auto-detect I2C address across common PCF8574 addresses */
+        uint8_t found_addr = 0;
+        uint8_t test_addrs[] = {0x27, 0x3F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x38, 0x3E};
+        for (size_t i = 0; i < sizeof(test_addrs); i++) {
+            Wire.beginTransmission(test_addrs[i]);
+            if (Wire.endTransmission() == 0) {
+                found_addr = test_addrs[i];
+                break;
+            }
+        }
+
+        if (found_addr != 0) {
+            _addr = found_addr;
+        }
+
+        delay(50);
+        /* HD44780 4-bit Initialization Sequence */
+        writeNibble(0x30, 0); delay(5);
+        writeNibble(0x30, 0); delay(5);
+        writeNibble(0x30, 0); delayMicroseconds(150);
+        writeNibble(0x20, 0); // 4-bit mode
+
+        sendByte(0x28, 0); // Function set: 2 lines, 5x8 font
+        sendByte(0x0C, 0); // Display ON, Cursor OFF, Blink OFF
+        sendByte(0x01, 0); delay(2); // Clear display
+        sendByte(0x06, 0); // Entry mode set: Increment, no shift
+        return (found_addr != 0);
+    }
+
+    void command(uint8_t cmd) {
+        sendByte(cmd, 0);
+    }
+
+    void writeChar(char c) {
+        sendByte((uint8_t)c, 1); // RS = 1 (Data)
+    }
+
+    void setCursor(uint8_t col, uint8_t row) {
+        static const uint8_t row_offsets[] = {0x00, 0x40, 0x14, 0x54};
+        command(0x80 | (col + row_offsets[row]));
+    }
+
+    void printStr(const char* str) {
+        while (*str) {
+            writeChar(*str++);
+        }
+    }
+
+    void createCustomChar(uint8_t location, const uint8_t charmap[8]) {
+        location &= 0x07; // 0..7
+        command(0x40 | (location << 3));
+        for (int i = 0; i < 8; i++) {
+            writeChar(charmap[i]);
+        }
+    }
+
+    void clear() {
+        command(0x01);
+        delay(2);
+    }
+};
+
+static I2C_LCD g_lcd(0x27);
+
+/* =============================================================================
+ * Custom 5x8 HD44780 LCD Glyphs for Sam, Khali, Taali, and Active Highlight
+ * ============================================================================= */
+
+/* Glyph 0: Sam Symbol (Filled Diamond) */
+static const uint8_t GLYPH_SAM_DATA[8] = {
+    0b00100, //   *  
+    0b01110, //  *** 
+    0b11111, // *****
+    0b11111, // *****
+    0b01110, //  *** 
+    0b00100, //   *  
+    0b00000,
+    0b00000
+};
+
+/* Glyph 1: Khali Symbol (Hollow Circle) */
+static const uint8_t GLYPH_KHALI_DATA[8] = {
+    0b00000,
+    0b01110, //  *** 
+    0b10001, // *   *
+    0b10001, // *   *
+    0b01110, //  *** 
+    0b00000,
+    0b00000,
+    0b00000
+};
+
+/* Glyph 2: Active Matra Marker (Inverted Highlight Box) */
+static const uint8_t GLYPH_ACTIVE_DATA[8] = {
+    0b11111,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b11111
+};
+
+/* Glyph 3: Taali Symbol (Plus / Star Clap Symbol) */
+static const uint8_t GLYPH_TAALI_DATA[8] = {
+    0b00100, //   *  
+    0b00100, //   *  
+    0b11111, // *****
+    0b00100, //   *  
+    0b00100, //   *  
+    0b00000,
+    0b00000,
+    0b00000
+};
+
+/* =============================================================================
+ * Shared Runtime & UI State
+ * ============================================================================= */
+
+enum TablaUIState {
+    TABLA_UI_READY = 0,
+    TABLA_UI_EKTAAL = 1
+};
 
 static vhl_loader_t g_vhl_loader;
 
-/* Sub-Sample Fractional Phase Accumulator & Pitch Transposition */
-static volatile float g_sample_phase = 0.0f;       /* Sub-sample position */
-static volatile int   g_semitone_offset = 0;        /* Semitone transpose (-12..+12) */
-static volatile float g_pitch_ratio = 1.0f;         /* pitchRatio = 2^(semitones/12) */
+static volatile uint32_t g_sample_cursor = 0;   /* Direct integer frame index */
+static volatile float    g_sample_phase  = 0.0f; /* Sub-sample position */
+static volatile float    g_pitch_ratio   = 1.0f; /* Fixed 1.0x native pitch */
+
+static volatile TablaUIState g_ui_state = TABLA_UI_READY;
+static volatile uint8_t      g_current_matra = 0;  /* Matra index 0..11 */
 
 /* Fast 16-to-8 Bit Triangular Noise-Shaping Dither */
 static inline uint8_t pcm16_to_dac8_dither(int16_t pcm_sample)
@@ -69,95 +231,68 @@ static inline float get_frame_sample(const int16_t* pPcm, uint32_t frameIdx, uin
     return (float)pPcm[frameIdx];
 }
 
-/* Decompile VHL File & Print All Parameters */
-static void decompile_and_print_vhl(const vhl_loader_t* pLoader)
+/* Render Screen 1: TABLA READY */
+static void render_ready_screen(void)
 {
-    if (!pLoader || !pLoader->isLoaded) {
-        Serial.println("[VHL DECOMPILER] ERROR: Invalid or unmapped VHL file!");
-        return;
-    }
-
-    const VHLFileHeader* pHdr = pLoader->pHeader;
-
-    Serial.println("=============================================================");
-    Serial.println("         ESP32 VHL FILE DECOMPILER & PARSER");
-    Serial.println("=============================================================");
-    Serial.printf("[VHL FILE] Size: %u bytes (%0.2f KB)\n", 
-                  (unsigned int)g_vhl_harmonium_package_size, 
-                  (float)g_vhl_harmonium_package_size / 1024.0f);
-    
-    Serial.printf("[VHL HEADER] Magic: %c%c%c%c | Version: %u.%u | Flags: 0x%04X\n",
-                  pHdr->magic[0], pHdr->magic[1], pHdr->magic[2], pHdr->magic[3],
-                  pHdr->version_major, pHdr->version_minor, pHdr->flags);
-    Serial.printf("[VHL HEADER] Target Sample Rate: %u Hz | DMA Block Size: %u B\n",
-                  (unsigned int)pHdr->target_sample_rate, pHdr->dma_block_size);
-    Serial.printf("[VHL HEADER] Instruments: %u | Total Regions: %u | Total Samples: %u\n",
-                  pHdr->num_instruments, pHdr->total_region_count, pHdr->total_sample_count);
-    Serial.printf("[VHL OFFSETS] Inst: %u | Region: %u | SampleDir: %u | Lookup: %u | PCM: %u\n\n",
-                  (unsigned int)pHdr->offset_instrument_table,
-                  (unsigned int)pHdr->offset_region_table,
-                  (unsigned int)pHdr->offset_sample_directory,
-                  (unsigned int)pHdr->offset_lookup_table,
-                  (unsigned int)pHdr->offset_pcm_data);
-
-    /* Decompile Instruments */
-    for (uint16_t i = 0; i < pHdr->num_instruments; ++i) {
-        const VHLInstrumentEntry* pInst = NULL;
-        if (vhl_loader_get_instrument(pLoader, (uint8_t)i, &pInst) == VHL_OK) {
-            Serial.printf("[VHL INSTRUMENT %u] ID: %u | Name: \"%s\" | Bank: %u | Program: %u | Regions: %u\n",
-                          i, pInst->instrument_id, pInst->name, pInst->bank, pInst->program, pInst->region_count);
-        }
-    }
-
-    /* Decompile Regions */
-    for (uint16_t r = 0; r < pHdr->total_region_count; ++r) {
-        const VHLRegion* pReg = &pLoader->pRegions[r];
-        Serial.printf("\n[VHL REGION %u]\n", r);
-        Serial.printf("  - Key Range: %u to %u | Velocity Range: %u to %u\n",
-                      pReg->key_lo, pReg->key_hi, pReg->vel_lo, pReg->vel_hi);
-        Serial.printf("  - Sample ID: %u | Loop Mode: %u | Exclusive Class: %u | Flags: 0x%02X\n",
-                      pReg->sample_id, pReg->loop_mode, pReg->exclusive_class, pReg->flags);
-        Serial.printf("  - Coarse Tune: %d semitones | Fine Tune: %d cents | Scale Tuning: %u%%\n",
-                      pReg->coarse_tune, pReg->fine_tune, pReg->scale_tuning);
-        Serial.printf("  - Attenuation: %u cB | Pan: %d (Centibels)\n",
-                      pReg->attenuation_cb, pReg->pan);
-        
-        Serial.printf("  - Vol Envelope: Delay=%ums, Attack=%ums, Hold=%ums, Decay=%ums, Sustain=%ucB, Release=%ums\n",
-                      pReg->vol_env.delay_ms, pReg->vol_env.attack_ms, pReg->vol_env.hold_ms,
-                      pReg->vol_env.decay_ms, pReg->vol_env.sustain_level, pReg->vol_env.release_ms);
-        Serial.printf("  - Mod Envelope: Delay=%ums, Attack=%ums, Hold=%ums, Decay=%ums, Sustain=%u, Release=%ums\n",
-                      pReg->mod_env.delay_ms, pReg->mod_env.attack_ms, pReg->mod_env.hold_ms,
-                      pReg->mod_env.decay_ms, pReg->mod_env.sustain_level, pReg->mod_env.release_ms);
-        Serial.printf("  - Filter: Cutoff=%u Hz | Resonance=%u cB\n",
-                      pReg->filter.cutoff_hz, pReg->filter.resonance_cb);
-    }
-
-    /* Decompile Samples */
-    for (uint16_t s = 0; s < pHdr->total_sample_count; ++s) {
-        const VHLSampleEntry* pSmpl = NULL;
-        if (vhl_loader_get_sample(pLoader, s, &pSmpl) == VHL_OK) {
-            float durationSec = (float)pSmpl->total_frames / (float)pSmpl->sample_rate;
-            uint32_t pcmBytes = pSmpl->total_frames * pSmpl->channels * sizeof(int16_t);
-
-            Serial.printf("\n[VHL SAMPLE %u]\n", s);
-            Serial.printf("  - Data Offset: %u bytes (Absolute Flash Offset: %u)\n",
-                          (unsigned int)pSmpl->data_offset,
-                          (unsigned int)(pHdr->offset_pcm_data + pSmpl->data_offset));
-            Serial.printf("  - Total Frames: %u frames (%0.2f seconds @ %u Hz)\n",
-                          (unsigned int)pSmpl->total_frames, durationSec, (unsigned int)pSmpl->sample_rate);
-            Serial.printf("  - Loop Start Frame: %u | Loop End Frame: %u\n",
-                          (unsigned int)pSmpl->loop_start_frame, (unsigned int)pSmpl->loop_end_frame);
-            Serial.printf("  - Root Key: %u (MIDI) | Fine Tune: %d cents | Bit Depth: %u-bit | Channels: %u (%s)\n",
-                          pSmpl->root_key, pSmpl->fine_tune_cents, pSmpl->bit_depth, pSmpl->channels,
-                          (pSmpl->channels == 2) ? "Stereo" : "Mono");
-            Serial.printf("  - Total PCM Data Size: %u bytes\n", (unsigned int)pcmBytes);
-        }
-    }
-
-    Serial.println("=============================================================");
+    g_lcd.clear();
+    g_lcd.setCursor(0, 0);
+    g_lcd.printStr("     TABLA      ");
+    g_lcd.setCursor(0, 1);
+    g_lcd.printStr("     READY      ");
 }
 
-/* Core 1 Real-Time Audio Task (Safe FreeRTOS Task Execution) */
+/* Helper to get base character for Ektaal Matra m (0..11):
+ * Matra 0 (1st beat):  Sam   (Glyph 0)
+ * Matra 2 (3rd beat):  Khali (Glyph 1)
+ * Matra 4 (5th beat):  Taali (Glyph 3)
+ * Matra 6 (7th beat):  Khali (Glyph 1)
+ * Matra 8 (9th beat):  Taali (Glyph 3)
+ * Matra 10 (11th beat): Taali (Glyph 3)
+ * Other matras:        Normal Dot '.'
+ */
+static char get_matra_base_char(uint8_t m)
+{
+    if (m == 0)                   return '\x00'; // Sam (1st beat)
+    if (m == 2 || m == 6)          return '\x01'; // Khali (3rd & 7th beats)
+    if (m == 4 || m == 8 || m == 10) return '\x03'; // Taali (5th, 9th & 11th beats)
+    return '.';                                   // Normal Matras
+}
+
+/* Full Render of Screen 2: EKTAAL Mode */
+static void render_ektaal_screen_full(uint8_t activeMatra)
+{
+    g_lcd.setCursor(0, 0);
+    g_lcd.printStr("EKTAAL       80 "); // Row 0: EKTAAL at 80 BPM
+
+    g_lcd.setCursor(0, 1);
+    g_lcd.printStr("  "); // 2 padding spaces (columns 0..1)
+
+    for (uint8_t m = 0; m < 12; m++) {
+        if (m == activeMatra) {
+            g_lcd.writeChar('\x02'); // Active Matra Highlight (Glyph 2)
+        } else {
+            g_lcd.writeChar(get_matra_base_char(m));
+        }
+    }
+    g_lcd.printStr("  "); // 2 padding spaces (columns 14..15)
+}
+
+/* Ultra-Fast Selective Update (2ms): Updates ONLY changed matras (prev -> new) */
+static void update_ektaal_matra_fast(uint8_t prevMatra, uint8_t newMatra)
+{
+    /* Restore previous matra to its base character */
+    if (prevMatra < 12) {
+        g_lcd.setCursor(2 + prevMatra, 1);
+        g_lcd.writeChar(get_matra_base_char(prevMatra));
+    }
+    /* Highlight new active matra */
+    if (newMatra < 12) {
+        g_lcd.setCursor(2 + newMatra, 1);
+        g_lcd.writeChar('\x02'); // Active Highlight (Glyph 2)
+    }
+}
+
+/* Core 1 Real-Time Audio Task with 200ms Audible Loop Restart Delay */
 static void vhl_audio_task(void* pvParameters)
 {
     (void)pvParameters;
@@ -174,16 +309,25 @@ static void vhl_audio_task(void* pvParameters)
                 uint32_t idx1 = idx0 + 1;
                 float frac = g_sample_phase - (float)idx0;
 
+                /* When loop finishes, reset to frame 0 and insert 200ms delay */
                 if (idx0 >= totalFrames) {
                     g_sample_phase = 0.0f;
                     idx0 = 0;
                     idx1 = 1;
+                    dacWrite(VHL_PIN_TEST_DAC, 128); // Silences output during pause
+                    vTaskDelay(pdMS_TO_TICKS(200));  // 200ms loop restart delay
                 }
                 if (idx1 >= totalFrames) {
                     idx1 = 0;
                 }
 
-                /* Sub-sample linear interpolation for smooth pitch transposition */
+                /* Synchronize Matra index (0..11) directly with audio sample frames */
+                uint32_t framesPerMatra = totalFrames / 12;
+                if (framesPerMatra > 0) {
+                    g_current_matra = (uint8_t)((idx0 / framesPerMatra) % 12);
+                }
+
+                /* Mono or Stereo sample extraction */
                 float s0 = get_frame_sample(pPcmData, idx0, channels);
                 float s1 = get_frame_sample(pPcmData, idx1, channels);
                 float interpolated = (1.0f - frac) * s0 + frac * s1;
@@ -196,7 +340,7 @@ static void vhl_audio_task(void* pvParameters)
                 /* Write directly to GPIO25 DAC */
                 dacWrite(VHL_PIN_TEST_DAC, dacByte);
 
-                /* Advance sub-sample phase accumulator by pitch ratio */
+                /* Advance sub-sample phase accumulator */
                 g_sample_phase += g_pitch_ratio;
 
                 delayMicroseconds(10);
@@ -210,10 +354,7 @@ static void vhl_audio_task(void* pvParameters)
     }
 }
 
-/* Switch Scanner:
- * Switch 1 (GPIO32): Decrease semitones by 1 (-1 semitone) & Re-trigger from frame 0
- * Switch 2 (GPIO33): Increase semitones by 1 (+1 semitone) & Re-trigger from frame 0
- */
+/* Core 0 Switch Scanner — ZERO Delay in LCD Display & Button Response */
 static bool s_sw1_last = false;
 static bool s_sw2_last = false;
 
@@ -225,40 +366,38 @@ static void scan_switches_and_update(void)
     bool sw1_pressed = (raw1 == LOW);
     bool sw2_pressed = (raw2 == LOW);
 
-    /* Switch 1: Decrease Semitone Offset by 1 & Re-trigger sample */
+    /* Switch 1: Instant Transition to Ektaal Mode */
     if (sw1_pressed && !s_sw1_last) {
-        if (g_semitone_offset > -12) {
-            g_semitone_offset--;
-        }
-        g_pitch_ratio = powf(2.0f, (float)g_semitone_offset / 12.0f);
-        g_sample_phase = 0.0f; /* Re-trigger sample from frame 0 */
         digitalWrite(VHL_PIN_TEST_LED_1, HIGH);
         digitalWrite(VHL_PIN_TEST_LED_2, LOW);
-        Serial.printf("\n[SWITCH 1 - SEMITONE DOWN] Offset: %d semitones | Pitch Ratio: %0.6fx | LED 1 ON | LED 2 OFF\n",
-                      g_semitone_offset, g_pitch_ratio);
+
+        if (g_ui_state == TABLA_UI_READY) {
+            g_ui_state = TABLA_UI_EKTAAL;
+            g_lcd.clear();
+            render_ektaal_screen_full(0);
+            g_sample_phase = 0.0f; // Instant audio restart
+            Serial.println("\n[UI SWITCH] Instant Transition to EKTAAL Mode!");
+        } else {
+            g_sample_phase = 0.0f; // Instant audio restart
+            Serial.println("\n[UI SWITCH] Instant Re-trigger of Ektaal from Sam!");
+        }
     } else if (!sw1_pressed && s_sw1_last && !sw2_pressed) {
         digitalWrite(VHL_PIN_TEST_LED_1, LOW);
     }
     s_sw1_last = sw1_pressed;
 
-    /* Switch 2: Increase Semitone Offset by 1 & Re-trigger sample */
+    /* Switch 2: Instant Re-trigger */
     if (sw2_pressed && !s_sw2_last) {
-        if (g_semitone_offset < 12) {
-            g_semitone_offset++;
-        }
-        g_pitch_ratio = powf(2.0f, (float)g_semitone_offset / 12.0f);
-        g_sample_phase = 0.0f; /* Re-trigger sample from frame 0 */
         digitalWrite(VHL_PIN_TEST_LED_2, HIGH);
         digitalWrite(VHL_PIN_TEST_LED_1, LOW);
-        Serial.printf("\n[SWITCH 2 - SEMITONE UP] Offset: %d semitones | Pitch Ratio: %0.6fx | LED 2 ON | LED 1 OFF\n",
-                      g_semitone_offset, g_pitch_ratio);
+        g_sample_phase = 0.0f;
     } else if (!sw2_pressed && s_sw2_last && !sw1_pressed) {
         digitalWrite(VHL_PIN_TEST_LED_2, LOW);
     }
     s_sw2_last = sw2_pressed;
 }
 
-/* Hardware Interface Setup */
+/* Hardware Interface & LCD Setup */
 static void vhl_hw_init(void)
 {
     pinMode(VHL_PIN_TEST_SWITCH_1, INPUT_PULLUP);
@@ -271,6 +410,21 @@ static void vhl_hw_init(void)
 
     /* Power up DAC hardware on GPIO25 */
     dacWrite(VHL_PIN_TEST_DAC, 128);
+
+    /* Initialize 16x2 I2C LCD on GPIO21 (SDA) and GPIO22 (SCL) */
+    bool lcd_found = g_lcd.begin(21, 22);
+
+    Serial.printf("[LCD SCAN] I2C Backpack Auto-Detection: %s (Address: 0x%02X)\n",
+                  lcd_found ? "SUCCESS" : "FAIL", g_lcd.getAddress());
+
+    /* Register Custom 5x8 Glyphs */
+    g_lcd.createCustomChar(0, GLYPH_SAM_DATA);    // Glyph 0: Sam
+    g_lcd.createCustomChar(1, GLYPH_KHALI_DATA);  // Glyph 1: Khali
+    g_lcd.createCustomChar(2, GLYPH_ACTIVE_DATA); // Glyph 2: Active Highlight
+    g_lcd.createCustomChar(3, GLYPH_TAALI_DATA);  // Glyph 3: Taali
+
+    /* Render initial READY screen */
+    render_ready_screen();
 }
 
 /* ESP32 Setup Entry Point */
@@ -286,34 +440,33 @@ void setup()
         return;
     }
 
-    decompile_and_print_vhl(&g_vhl_loader);
-
-    /* 2. Initialize Hardware Pins */
+    /* 2. Initialize Hardware & 16x2 LCD */
     vhl_hw_init();
-    Serial.println("[HARDWARE] Pins Configured: GPIO32 (SW1: Semitone -1), GPIO33 (SW2: Semitone +1), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC)");
-    Serial.println("[MODE] REAL-TIME SEMITONE TRANSPOSITION ENGINE INITIALIZED (Core 1 Task).");
-    Serial.println("[USAGE] Press SW1 to decrease pitch (-1 semitone) & restart. Press SW2 to increase pitch (+1 semitone) & restart.\n");
+    Serial.println("[HARDWARE] Pins Configured: GPIO32 (SW1: Enter Ektaal), GPIO33 (SW2), GPIO18 (LED1), GPIO19 (LED2), GPIO25 (DAC)");
+    Serial.println("[MODE] TABLA EKTAAL 12-MATRA EXPERIMENT (200ms Loop Delay & Sam/Khali/Taali Glyphs Ready).\n");
 
-    /* 3. Launch Core 1 Audio Task with Priority 1 */
+    /* 3. Launch Core 1 Audio Task */
     xTaskCreatePinnedToCore(vhl_audio_task, "vhl_audio_task", 4096, NULL, 1, NULL, 1);
 }
 
-/* Core 0 Main Input Scan & Real-Time Pin Monitor */
-static uint32_t s_last_monitor_ms = 0;
+/* Core 0 Main Input Scan & High-Speed LCD UI Update Loop */
+static uint8_t s_last_rendered_matra = 255;
 
 void loop()
 {
     scan_switches_and_update();
 
-    /* Real-time Diagnostic Monitor Output every 2 seconds */
-    uint32_t now = millis();
-    if (now - s_last_monitor_ms >= 2000) {
-        s_last_monitor_ms = now;
-        int sw1_val = digitalRead(VHL_PIN_TEST_SWITCH_1);
-        int sw2_val = digitalRead(VHL_PIN_TEST_SWITCH_2);
-        Serial.printf("[MONITOR] GPIO32 (SW1)=%d | GPIO33 (SW2)=%d | Semitones: %d | Pitch Ratio: %0.6fx | Frame: %u / %u\n",
-                      sw1_val, sw2_val, g_semitone_offset, g_pitch_ratio, (unsigned int)g_sample_phase,
-                      g_vhl_loader.isLoaded ? (unsigned int)g_vhl_loader.pSamples[0].total_frames : 0);
+    /* Selective Ultra-Fast LCD Rendering: Update ONLY when matra changes (2ms latency) */
+    if (g_ui_state == TABLA_UI_EKTAAL) {
+        uint8_t curr = g_current_matra;
+        if (curr != s_last_rendered_matra) {
+            if (s_last_rendered_matra == 255) {
+                render_ektaal_screen_full(curr);
+            } else {
+                update_ektaal_matra_fast(s_last_rendered_matra, curr);
+            }
+            s_last_rendered_matra = curr;
+        }
     }
 
     delay(5);
