@@ -3,6 +3,7 @@
  * Project: Digital Harmonium Workstation Firmware
  * Stage 4  — Event Bus Architecture
  * Stage 11 — Recorder Tap Hook Integration
+ * Stage 13 — LED Tap Hook Integration
  * ============================================================================= */
 
 #include "event_bus.h"
@@ -18,6 +19,11 @@ static uint32_t          s_system_event_bits = 0;
 /* Stage 11: Recorder Tap Hook State */
 static vhl_recorder_tap_fn_t s_recorder_tap_fn  = NULL;
 static void*                 s_recorder_tap_ctx  = NULL;
+
+/* Stage 13: LED Tap Hook State
+ * Fires on every key event (live or VHR playback re-injection) — same path. */
+static vhl_led_tap_fn_t      s_led_tap_fn        = NULL;
+static void*                 s_led_tap_ctx       = NULL;
 
 /* -----------------------------------------------------------------------------
  * Ring Buffer Struct for Standalone Host Verification Mode
@@ -116,6 +122,10 @@ vhl_err_t vhl_event_bus_init(void)
     s_recorder_tap_fn  = NULL;
     s_recorder_tap_ctx = NULL;
 
+    /* Stage 13: clear LED tap on (re-)init */
+    s_led_tap_fn  = NULL;
+    s_led_tap_ctx = NULL;
+
     return VHL_OK;
 }
 
@@ -127,6 +137,17 @@ vhl_err_t vhl_event_bus_set_recorder_hook(vhl_recorder_tap_fn_t tapFn, void* pCt
 {
     s_recorder_tap_fn  = tapFn;
     s_recorder_tap_ctx = pCtx;
+    return VHL_OK;
+}
+
+/* -----------------------------------------------------------------------------
+ * Stage 13: LED Tap Hook Registration
+ * ----------------------------------------------------------------------------- */
+
+vhl_err_t vhl_event_bus_set_led_hook(vhl_led_tap_fn_t tapFn, void* pCtx)
+{
+    s_led_tap_fn  = tapFn;
+    s_led_tap_ctx = pCtx;
     return VHL_OK;
 }
 
@@ -151,6 +172,16 @@ vhl_err_t vhl_event_bus_post_key_event(const vhl_key_event_t* pEvent)
      */
     if (s_recorder_tap_fn) {
         s_recorder_tap_fn(pEvent, s_recorder_tap_ctx);
+    }
+
+    /*
+     * Stage 13: LED Tap Hook.
+     * Fires immediately after recorder tap. Also non-blocking (<1 us).
+     * This drives the LED engine for both live play and VHR playback re-injection,
+     * without the LED engine needing to know the event source.
+     */
+    if (s_led_tap_fn) {
+        s_led_tap_fn(pEvent, s_led_tap_ctx);
     }
 
     return success ? VHL_OK : VHL_ERR_NO_MEM;

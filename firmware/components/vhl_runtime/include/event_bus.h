@@ -1,8 +1,9 @@
 /* =============================================================================
  * event_bus.h — Inter-Task Queues & Event Bus Engine
  * Project: Digital Harmonium Workstation Firmware
- * Stage 4 — Event Bus Architecture
+ * Stage 4  — Event Bus Architecture
  * Stage 11 — Recorder Tap Hook (Event Bus-Driven Recording Architecture)
+ * Stage 13 — LED Tap Hook (Event Bus-Driven LED Architecture)
  * ============================================================================= */
 
 #ifndef EVENT_BUS_H
@@ -81,6 +82,29 @@ typedef void (*vhl_recorder_tap_fn_t)(const vhl_key_event_t* pEvent, void* pCtx)
  * Pass NULL for both arguments to deregister (disable recording tap).
  */
 vhl_err_t vhl_event_bus_set_recorder_hook(vhl_recorder_tap_fn_t tapFn, void* pCtx);
+
+/* =============================================================================
+ * Stage 13: LED Tap Hook
+ * The LED engine registers here to receive every key event (NOTE_ON/OFF)
+ * from both live keyboard input and VHR playback re-injection.
+ * It fires after the recorder tap on every vhl_event_bus_post_key_event() call.
+ * Must be lock-free and non-blocking (< 1 us execution time).
+ * ============================================================================= */
+
+/**
+ * LED tap callback signature.
+ * Called inside vhl_event_bus_post_key_event() immediately after the recorder tap.
+ * Must be lock-free and non-blocking (< 1 us execution time).
+ * @param pEvent  Pointer to the key event that was posted.
+ * @param pCtx    Opaque context pointer supplied during registration.
+ */
+typedef void (*vhl_led_tap_fn_t)(const vhl_key_event_t* pEvent, void* pCtx);
+
+/**
+ * Register an LED tap callback on the Event Bus.
+ * Pass NULL for both arguments to deregister (disable LED tap).
+ */
+vhl_err_t vhl_event_bus_set_led_hook(vhl_led_tap_fn_t tapFn, void* pCtx);
 
 /* -----------------------------------------------------------------------------
  * Task-Context APIs (Forbidden inside ISRs)
