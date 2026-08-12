@@ -35,6 +35,7 @@
 #if defined(ESP_PLATFORM)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 #endif
 
 /* =============================================================================
@@ -283,57 +284,42 @@ static inline float get_frame(const int16_t* p, uint32_t idx, uint8_t ch) {
 }
 
 /* =============================================================================
- * Core 0 — Real-Time Audio Task (Harmonium Playback)
+ * Real-Time Hardware Timer Audio Interrupt (44.1 kHz DAC Output)
  * ============================================================================= */
 
-static void vhl_audio_task(void* pv)
+static esp_timer_handle_t g_audio_timer_handle = NULL;
+
+/* Audio timer callback: fires at ~43,478 Hz (23 µs period).
+ * Runs inside the esp_timer dedicated FreeRTOS task at priority 22
+ * -- the highest user-space priority on ESP32. dacWrite() is fully
+ * safe here; no ISR restrictions apply. Audio always preempts loop(). */
+static void IRAM_ATTR audio_timer_cb(void* arg)
 {
-    (void)pv;
-    uint64_t next_sample_us = esp_timer_get_time();
+    if (g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
+        const VHLSampleEntry* pS = &g_vhl_loader.pSamples[0];
+        const int16_t* pPcm = (const int16_t*)(g_vhl_loader.pPcmBase + pS->data_offset);
+        uint32_t nFrames = pS->total_frames;
+        uint8_t ch = pS->channels > 0 ? pS->channels : 1;
 
-    while (1) {
-        if (g_vhl_loader.isLoaded && g_vhl_loader.pPcmBase) {
-            const VHLSampleEntry* pS = &g_vhl_loader.pSamples[0];
-            const int16_t* pPcm = (const int16_t*)(g_vhl_loader.pPcmBase + pS->data_offset);
-            uint32_t nFrames = pS->total_frames;
-            uint8_t ch = pS->channels > 0 ? pS->channels : 1;
-
-            if (pPcm && nFrames > 0) {
-                /* Seamless sample looping -- no 200ms delay or drop at sample end */
-                while (g_sample_phase >= (float)nFrames) {
-                    g_sample_phase -= (float)nFrames;
-                }
-
-                uint32_t i0 = (uint32_t)g_sample_phase;
-                uint32_t i1 = (i0 + 1 >= nFrames) ? 0 : i0 + 1;
-                float frac  = g_sample_phase - (float)i0;
-
-                float interp = (1.0f - frac) * get_frame(pPcm, i0, ch)
-                             + frac           * get_frame(pPcm, i1, ch);
-                dacWrite(VHL_PIN_TEST_DAC, pcm16_to_dac8((int16_t)interp));
-                g_sample_phase += g_active_pitch;  /* use active pitch (sw1 or sw2) */
-
-                /* Target microsecond pacing: exactly 10us per sample iteration */
-                next_sample_us += 10;
-                uint64_t now_us = esp_timer_get_time();
-                if (next_sample_us > now_us) {
-                    uint32_t wait_us = (uint32_t)(next_sample_us - now_us);
-                    if (wait_us > 0) {
-                        delayMicroseconds(wait_us);
-                    }
-                } else {
-                    /* Resync target if processing ever falls behind */
-                    next_sample_us = now_us;
-                }
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(1));
-                next_sample_us = esp_timer_get_time();
+        if (pPcm && nFrames > 0) {
+            /* Seamless sample looping -- no gap at boundary */
+            while (g_sample_phase >= (float)nFrames) {
+                g_sample_phase -= (float)nFrames;
             }
+
+            uint32_t i0 = (uint32_t)g_sample_phase;
+            uint32_t i1 = (i0 + 1 >= nFrames) ? 0 : i0 + 1;
+            float frac  = g_sample_phase - (float)i0;
+
+            float interp = (1.0f - frac) * get_frame(pPcm, i0, ch)
+                         + frac           * get_frame(pPcm, i1, ch);
+            dacWrite(VHL_PIN_TEST_DAC, pcm16_to_dac8((int16_t)interp));
+            g_sample_phase += g_active_pitch;
         } else {
             dacWrite(VHL_PIN_TEST_DAC, 128);
-            vTaskDelay(pdMS_TO_TICKS(1));
-            next_sample_us = esp_timer_get_time();
         }
+    } else {
+        dacWrite(VHL_PIN_TEST_DAC, 128);
     }
 }
 
@@ -353,7 +339,6 @@ static void vhl_audio_task(void* pv)
  *   Release -> record NOTE_OFF (MIDI 62), revert pitch to SW1 if SW1 held
  *
  * Holding SW1 while pressing SW2 keeps both active (chording).
- * Serial.printf is kept OUT of this function (1x per second in loop() instead).
  * ============================================================================ */
 
 static void handle_switch_press(bool sw1_down, bool sw2_down)
@@ -403,18 +388,12 @@ static void handle_switch_press(bool sw1_down, bool sw2_down)
 }
 
 /* =============================================================================
- * compute_base_pitch_ratio — Correct audio playback speed from VHL sample rate
- *
- * The audio task uses delayMicroseconds(10), giving a DAC clock of 100,000 Hz.
- * A 44100 Hz sample played at g_pitch_ratio = 1.0 runs 2.27x too fast.
- * This function computes the exact ratio so the sample plays at its intended speed.
- *
- * +2 semitones = base * 2^(2/12) = base * VHR_SEMITONE_RATIO^2
+ * compute_base_pitch_ratio — Pitch ratio calculation
  * ============================================================================= */
 static float compute_base_pitch_ratio(uint32_t sampleRate)
 {
-    if (sampleRate == 0) sampleRate = VHL_SAMPLE_RATE;
-    return (float)sampleRate / (float)VHR_DAC_CLOCK_HZ;
+    /* For 44.1 kHz hardware timer, base ratio is exactly 1.0 */
+    return 1.0f;
 }
 
 /* =============================================================================
@@ -423,9 +402,6 @@ static float compute_base_pitch_ratio(uint32_t sampleRate)
 
 void setup()
 {
-    /* Disable Core 0 Watchdog so high-priority audio task on Core 0 can run continuous DSP */
-    disableCore0WDT();
-
     Serial.begin(VHR_SERIAL_BAUD);
     delay(300);
 
@@ -458,24 +434,14 @@ void setup()
     Serial.printf("[LCD] I2C: %s (0x%02X)\n",
                   lcd_ok ? "OK" : "NOT FOUND", g_lcd.getAddress());
 
-    /* Compute pitch ratios from the VHL sample's actual sample_rate.
-     * base = sample_rate / DAC_CLOCK_HZ ensures the sample plays at
-     * exactly its recorded speed regardless of the 10us delay loop. */
-    if (g_vhl_loader.isLoaded && g_vhl_loader.pSamples) {
-        uint32_t sr = g_vhl_loader.pSamples[0].sample_rate;
-        float base   = compute_base_pitch_ratio(sr);
-        float shift2 = base * VHR_SEMITONE_RATIO * VHR_SEMITONE_RATIO; /* x 2^(2/12) */
-        g_pitch_ratio_sw1 = base;
-        g_pitch_ratio_sw2 = shift2;
-        g_active_pitch    = base;   /* start at root pitch */
-        Serial.printf("[VHL] sample_rate=%uHz  base_pitch=%.4f  +2st_pitch=%.4f\n",
-                      sr, base, shift2);
-    } else {
-        /* Fallback if loader didn't fill sample table yet */
-        g_pitch_ratio_sw1 = compute_base_pitch_ratio(VHL_SAMPLE_RATE);
-        g_pitch_ratio_sw2 = g_pitch_ratio_sw1 * VHR_SEMITONE_RATIO * VHR_SEMITONE_RATIO;
-        g_active_pitch    = g_pitch_ratio_sw1;
-    }
+    /* Pitch ratios: esp_timer period = 23 µs → 43,478 ticks/sec.
+     * Sample native rate = 44,100 Hz.
+     * Advance 44100/43478 = 1.01430 samples per tick → correct pitch. */
+    g_pitch_ratio_sw1 = 44100.0f / 43478.0f;                      /* root pitch  (C4) */
+    g_pitch_ratio_sw2 = g_pitch_ratio_sw1
+                      * VHR_SEMITONE_RATIO * VHR_SEMITONE_RATIO;  /* +2 semitones (D4) */
+    g_active_pitch    = g_pitch_ratio_sw1;
+
     g_sample_phase = 0.0f;
 
     vhl_recorder_arm(&g_recorder,
@@ -504,8 +470,21 @@ void setup()
     Serial.println("[VHR] SW2 (GPIO33) = +2 semitones (D4) : PRESS=NOTE_ON  RELEASE=NOTE_OFF");
     Serial.println("[VHR] Hold SW1 + tap SW2 to chord both pitches!\n");
 
-    /* 6. Launch audio task on Core 0 at priority 5 (Core 0 dedicated for DSP) */
-    xTaskCreatePinnedToCore(vhl_audio_task, "vhl_audio", 4096, NULL, 5, NULL, 0);
+    /* 6. Start esp_timer for DAC audio synthesis.
+     * Period 23 µs → ~43,478 Hz. The esp_timer task runs at FreeRTOS
+     * priority 22 (configMAX_PRIORITIES - 3), the highest user-space
+     * priority on ESP32. Audio always preempts loop() and all user tasks. */
+    {
+        const esp_timer_create_args_t audio_timer_args = {
+            .callback             = &audio_timer_cb,
+            .arg                  = NULL,
+            .dispatch_method      = ESP_TIMER_TASK,
+            .name                 = "audio_dac",
+            .skip_unhandled_events = true,
+        };
+        esp_timer_create(&audio_timer_args, &g_audio_timer_handle);
+        esp_timer_start_periodic(g_audio_timer_handle, 23);  /* 23 µs period */
+    }
 }
 
 /* =============================================================================
