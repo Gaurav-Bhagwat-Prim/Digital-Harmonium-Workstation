@@ -3,15 +3,11 @@
  * Target: ESP32-WROOM / ESP32 DevKit Physical Board
  *
  * Features:
- *   1. 8-Key 74HC165 Shift Register Keyboard Scanner (Sa, Re, Ga, Ma, Pa, Dha, Ni, Sa)
- *      - Key 1: Sa  (-12 semitones lower, 0.5000x pitch) [MIDI 48]
- *      - Key 2: Re  (-10 semitones,        0.5612x pitch) [MIDI 50]
- *      - Key 3: Ga  ( -8 semitones,        0.6300x pitch) [MIDI 52]
- *      - Key 4: Ma  ( -7 semitones,        0.6674x pitch) [MIDI 53]
- *      - Key 5: Pa  ( -5 semitones,        0.7492x pitch) [MIDI 55]
- *      - Key 6: Dha ( -3 semitones,        0.8409x pitch) [MIDI 57]
- *      - Key 7: Ni  ( -1 semitone,         0.9439x pitch) [MIDI 59]
- *      - Key 8: Sa' (  0 semitones,        1.0000x pitch) [MIDI 60, original sample]
+ *   1. 61-Key Matrix Keyboard Scanner (8 Rows x 8 Columns)
+ *      - 8 Rows driven by dedicated ESP32 GPIO outputs (125 us per row, 1000 Hz)
+ *      - 8 Columns read via 74HC165 parallel-in serial-out shift register
+ *      - 61 keys: C2 (0.250x, MIDI 36) to C7 (8.000x, MIDI 96)
+ *      - Root key: C4 (1.000x, MIDI 60, harmonium base sample)
  *   2. Full Harmonium audio playback via PCM5102A I²S DAC (44.1 kHz, 16-bit)
  *   3. Wireless Bluetooth A2DP Source streaming to "Airdopes 219" headphones
  *   4. Dual Audio Output: Wired Speaker + Wireless Headphones simultaneously
@@ -20,14 +16,17 @@
  *   7. Memory usage monitor with MALLOC_CAP diagnostics
  *
  * Hardware Map:
- *   74HC165 Shift Register:
- *     LOAD_PIN:  GPIO19 (OUTPUT)
- *     CLOCK_PIN: GPIO18 (OUTPUT)
- *     DATA_PIN:  GPIO34 (INPUT)
+ *   Matrix Rows (Dedicated GPIO Outputs, active HIGH for 125 us):
+ *     Row 0: GPIO23 | Row 1: GPIO22 | Row 2: GPIO21 | Row 3: GPIO17
+ *     Row 4: GPIO16 | Row 5: GPIO4  | Row 6: GPIO13 | Row 7: GPIO14
+ *   74HC165 Columns (Shift Register Inputs):
+ *     165 QH:     GPIO34 (INPUT)
+ *     165 CLK:    GPIO18 (OUTPUT)
+ *     165 /SH-LD: GPIO19 (OUTPUT)
  *   PCM5102A I2S DAC:
- *     DOUT:      GPIO25 (DIN)
- *     BCLK:      GPIO26 (BCK)
- *     LRCLK:     GPIO27 (LRCK)
+ *     DOUT (DIN): GPIO25
+ *     BCLK (BCK): GPIO26
+ *     LRCLK (WS): GPIO27
  * ============================================================================= */
 
 #include <Arduino.h>
@@ -52,40 +51,49 @@
 #include "BluetoothA2DPSource.h"
 
 /* =============================================================================
- * 74HC165 Shift Register Pin Configuration
+ * 61-Key Matrix Keyboard Pin Configuration
+ *
+ * 8 Rows (Outputs from ESP32, driven HIGH one row at a time for 125 us):
+ *   Row 0 (FI0/SI0): GPIO23
+ *   Row 1 (FI1/SI1): GPIO22
+ *   Row 2 (FI2/SI2): GPIO21
+ *   Row 3 (FI3/SI3): GPIO17
+ *   Row 4 (FI4/SI4): GPIO16
+ *   Row 5 (FI5/SI5): GPIO4
+ *   Row 6 (FI6/SI6): GPIO13
+ *   Row 7 (FI7/SI7): GPIO14
+ *
+ * 8 Columns (Inputs to ESP32 via 74HC165 Shift Register):
+ *   165 QH:     GPIO34 (Data In)
+ *   165 CLK:    GPIO18 (Clock Out)
+ *   165 /SH-LD: GPIO19 (Shift/Load Out)
  * ============================================================================= */
-#define HC165_LOAD_PIN   19
-#define HC165_CLOCK_PIN  18
-#define HC165_DATA_PIN   34
+#define MATRIX_ROWS          8
+#define MATRIX_COLS          8
+#define TOTAL_KEYS           61
+#define KEY_ROOT_INDEX       24   /* Index 24 = Key 25 = C4 (Root sample) */
+#define KEY_BASE_MIDI        36   /* C2 = MIDI Note 36 */
 
-/* Configuration:
- * Set HC165_KEY8_IS_MSB to 1 if 10000000 is Key 8 (Sa' High) and 00000001 is Key 1 (Sa Low).
- * Set to 0 if 10000000 is Key 1 and 00000001 is Key 8.
- */
-#define HC165_KEY8_IS_MSB  1
+static const uint8_t ROW_PINS[MATRIX_ROWS] = { 23, 22, 21, 17, 16, 4, 13, 14 };
 
+#define HC165_QH_PIN         34
+#define HC165_CLK_PIN        18
+#define HC165_SHLD_PIN       19
+
+#define ROW_ACTIVE_LEVEL     HIGH
+#define ROW_INACTIVE_LEVEL   LOW
 
 /* =============================================================================
- * Swara Musical Definitions (Bilawal Thaat / 1 Octave Scale)
+ * 61-Key Musical Structure (5 Octaves: C2 to C7)
  * ============================================================================= */
 typedef struct {
-    const char* name;          /* Swara name */
-    float       pitch_ratio;   /* Playback speed ratio */
-    int8_t      semitones;     /* Relative to original sample (Key 8) */
-    uint8_t     midi_note;     /* MIDI Note number */
-} swara_t;
+    char        name[16];      /* e.g. "C2", "C#4", "C4 (Root)", "C7" */
+    float       pitch_ratio;   /* 2^((i - 24) / 12.0f) */
+    int8_t      semitones;     /* Relative to C4 (index 24) */
+    uint8_t     midi_note;     /* 36 to 96 */
+} key_note_t;
 
-/* 8 Swaras from lower octave Sa (-12 semitones) to original sample Sa (0 semitones) */
-static const swara_t SWARAS[8] = {
-    { "Sa",  0.500000f, -12, 48 },  /* Key 1: 1 octave lower (C3)  */
-    { "Re",  0.561231f, -10, 50 },  /* Key 2: 10 st lower (D3)     */
-    { "Ga",  0.629961f,  -8, 52 },  /* Key 3: 8 st lower (E3)      */
-    { "Ma",  0.667420f,  -7, 53 },  /* Key 4: 7 st lower (F3)      */
-    { "Pa",  0.749154f,  -5, 55 },  /* Key 5: 5 st lower (G3)      */
-    { "Dha", 0.840896f,  -3, 57 },  /* Key 6: 3 st lower (A3)      */
-    { "Ni",  0.943874f,  -1, 59 },  /* Key 7: 1 st lower (B3)      */
-    { "Sa'", 1.000000f,   0, 60 }   /* Key 8: Original sample (C4) */
-};
+static key_note_t g_keyboard[TOTAL_KEYS];
 
 /* =============================================================================
  * Recording & Audio Configuration
@@ -141,9 +149,9 @@ static volatile bool         g_key_pressed     = false;     /* true while any ke
 /* Bluetooth A2DP Source Instance */
 static BluetoothA2DPSource   s_a2dp_source;
 
-/* Currently pressed key tracking (-1 = none, 0..7 = Key 1..8) */
+/* Currently pressed key tracking (-1 = none, 0..60 = Key 1..61) */
 static int                   s_current_key_idx = -1;
-static uint8_t               s_last_raw_bits   = 0xFF;
+static uint64_t              s_last_key_map    = 0ULL;
 
 /* Audio Frame Interpolation Helper */
 static inline float get_frame(const int16_t* p, uint32_t idx, uint8_t ch) {
@@ -329,104 +337,174 @@ static void audio_i2s_task(void* arg)
 }
 
 /* =============================================================================
- * 74HC165 Shift Register Driver
+ * 61-Key Matrix Keyboard Driver (1000 Hz Matrix Scan, 125 us per row)
+ *
+ * 8 Rows driven by dedicated ESP32 GPIOs (FI0-FI7 / SI0-SI7 combined):
+ *   Row 0: GPIO23, Row 1: GPIO22, Row 2: GPIO21, Row 3: GPIO17,
+ *   Row 4: GPIO16, Row 5: GPIO4,  Row 6: GPIO13, Row 7: GPIO14
+ *
+ * 8 Columns read via 74HC165 shift register:
+ *   QH: GPIO34, CLK: GPIO18, /SH-LD: GPIO19
+ *
+ * Each row is activated HIGH for 125 microseconds.
+ * Full 8-row scan = 8 * 125 us = 1000 us = 1 ms (1000 scans per second).
  * ============================================================================= */
-static inline void hc165_clock_pulse(void)
+
+/* Capture 8 column inputs into 74HC165 parallel latches */
+static inline void load165(void)
 {
-    digitalWrite(HC165_CLOCK_PIN, HIGH);
+    // /SH-LD LOW = parallel load
+    digitalWrite(HC165_SHLD_PIN, LOW);
+    delayMicroseconds(2);
+
+    // /SH-LD HIGH = shift mode
+    digitalWrite(HC165_SHLD_PIN, HIGH);
     delayMicroseconds(1);
-    digitalWrite(HC165_CLOCK_PIN, LOW);
 }
 
-static uint8_t hc165_read_byte(void)
+/* Read 8 column inputs from 74HC165 (KC0 to KC7) */
+static inline uint8_t read165Columns(void)
 {
-    /* Latch parallel inputs (A-H) */
-    digitalWrite(HC165_LOAD_PIN, LOW);
-    delayMicroseconds(2);
-    digitalWrite(HC165_LOAD_PIN, HIGH);
-    delayMicroseconds(2);
+    uint8_t columns = 0;
+    digitalWrite(HC165_CLK_PIN, LOW);
+    delayMicroseconds(1);
 
-    uint8_t raw = 0;
-    for (int i = 0; i < 8; i++) {
-        int bit = digitalRead(HC165_DATA_PIN);
-        raw = (raw << 1) | (bit & 1);
-        hc165_clock_pulse();
+    for (int bit = 7; bit >= 0; bit--)
+    {
+        // Read current QH BEFORE clocking
+        if (digitalRead(HC165_QH_PIN))
+        {
+            columns |= (1 << bit);
+        }
+
+        // Shift next bit toward QH with clean 1us clock pulse
+        digitalWrite(HC165_CLK_PIN, HIGH);
+        delayMicroseconds(1);
+        digitalWrite(HC165_CLK_PIN, LOW);
+        delayMicroseconds(1);
     }
-    return raw;
+
+    return columns;
 }
 
-/* Decode pressed key index (0 to 7) or -1 if no key is pressed */
-static int decode_key_index(uint8_t raw)
+/* Scan all 8 rows. Each row has a 125 microsecond time slot (1000 Hz total matrix scan).
+ * Inactive rows remain in high-impedance INPUT (Hi-Z) mode to prevent cross-row leakage.
+ * Active row is temporarily switched to OUTPUT HIGH for 25 us, latched, then returned to INPUT. */
+static uint64_t matrix_scan_keys(void)
 {
-    if (raw == 0x00) return -1;
+    uint64_t key_map = 0;
 
-#if HC165_KEY8_IS_MSB
-    /* 10000000 (0x80) -> Key 8 (index 7: Sa')
-     * 00000001 (0x01) -> Key 1 (index 0: Sa)
-     */
-    for (int k = 7; k >= 0; k--) {
-        if (raw & (1 << k)) {
-            return k; /* 0..7 matches SWARAS[0..7] */
+    for (uint8_t row = 0; row < MATRIX_ROWS; row++)
+    {
+        uint32_t tRowStart = (uint32_t)esp_timer_get_time();
+
+        // 1. Switch this row from high-impedance INPUT to OUTPUT HIGH
+        pinMode(ROW_PINS[row], OUTPUT);
+        digitalWrite(ROW_PINS[row], HIGH);
+
+        // 2. Allow 20 microseconds for contact and trace charging
+        delayMicroseconds(20);
+
+        // 3. Latch column inputs into 74HC165
+        load165();
+
+        // 4. Return row to high-impedance INPUT (Hi-Z) so it completely disconnects
+        digitalWrite(ROW_PINS[row], LOW);
+        pinMode(ROW_PINS[row], INPUT);
+
+        // 5. Read the 8 latched column bits from 74HC165
+        uint8_t cols = read165Columns();
+
+        // 6. Map column bits to key bitmap
+        for (uint8_t col = 0; col < MATRIX_COLS; col++)
+        {
+            if (cols & (1 << col))
+            {
+                uint8_t key_idx = row * MATRIX_COLS + col;
+                if (key_idx < TOTAL_KEYS)
+                {
+                    key_map |= ((uint64_t)1 << key_idx);
+                }
+            }
+        }
+
+        // 7. Wait out the remaining time of this row's 125 us slot
+        while (((uint32_t)esp_timer_get_time() - tRowStart) < 125)
+        {
+            // microsecond precision wait (allows complete column line discharge)
         }
     }
-#else
-    /* 10000000 (0x80) -> Key 1 (index 0: Sa)
-     * 00000001 (0x01) -> Key 8 (index 7: Sa')
-     */
-    for (int k = 7; k >= 0; k--) {
-        if (raw & (1 << k)) {
-            return (7 - k);
+
+    return key_map;
+}
+
+/* Decode active key index (0 to 60) or -1 if no key is pressed.
+ * Scans lowest-index first (true row priority) so residual capacitive tail
+ * from an earlier row cannot ghost into a higher row. */
+static int decode_active_key(uint64_t key_map)
+{
+    if (key_map == 0ULL) return -1;
+    for (int i = 0; i < (int)TOTAL_KEYS; i++)
+    {
+        if (key_map & ((uint64_t)1 << i))
+        {
+            return i;
         }
     }
-#endif
     return -1;
 }
 
 /* =============================================================================
- * 74HC165 Keyboard Scanner & Swara Pitch Processor
+ * 61-Key Keyboard Scanner & Pitch Processor
  * ============================================================================= */
 static void process_keyboard(void)
 {
-    uint8_t raw = hc165_read_byte();
-    int key_idx = decode_key_index(raw);
+    uint64_t key_map = matrix_scan_keys();
+    int key_idx = decode_active_key(key_map);
 
     /* Check if key state changed */
-    if (raw != s_last_raw_bits) {
-        s_last_raw_bits = raw;
+    if (key_map != s_last_key_map) {
+        s_last_key_map = key_map;
         uint32_t nowUs = (uint32_t)esp_timer_get_time();
 
-        /* Print raw 8-bit string to Serial */
-        Serial.print("[74HC165] Bits: ");
-        for (int i = 7; i >= 0; i--) {
-            Serial.print((raw >> i) & 1);
+        /* Print raw matrix state if any key is pressed */
+        if (key_map != 0ULL) {
+            Serial.print("[MATRIX RAW] ");
+            for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+                uint8_t row_bits = (uint8_t)((key_map >> (r * MATRIX_COLS)) & 0xFF);
+                if (row_bits != 0) {
+                    Serial.printf("R%u=0x%02X ", r, row_bits);
+                }
+            }
+            Serial.println();
         }
 
-        if (key_idx >= 0 && key_idx < 8) {
+        if (key_idx >= 0 && key_idx < (int)TOTAL_KEYS) {
             g_key_pressed = true; /* Key held: audio active */
 
             /* Only retrigger from beginning if key actually CHANGED */
             if (key_idx != s_current_key_idx) {
-                const swara_t* pSwara = &SWARAS[key_idx];
-                g_active_pitch    = pSwara->pitch_ratio;
+                const key_note_t* pNote = &g_keyboard[key_idx];
+                g_active_pitch    = pNote->pitch_ratio;
                 g_sample_phase    = 0.0f; /* Reset wired I2S DAC to frame 0 */
                 g_bt_sample_phase = 0.0f; /* Reset Bluetooth to frame 0 */
 
                 if (g_rec_state == REC_RECORDING) {
                     if (s_current_key_idx >= 0) {
                         vhl_recorder_push_event(&g_recorder,
-                            VHR_EVENT_NOTE_OFF, SWARAS[s_current_key_idx].midi_note, 0, 0, nowUs);
+                            VHR_EVENT_NOTE_OFF, g_keyboard[s_current_key_idx].midi_note, 0, 0, nowUs);
                     }
                     vhl_recorder_push_event(&g_recorder,
-                        VHR_EVENT_NOTE_ON, pSwara->midi_note, VHR_VELOCITY, 0, nowUs);
+                        VHR_EVENT_NOTE_ON, pNote->midi_note, VHR_VELOCITY, 0, nowUs);
                     vhl_recorder_push_event(&g_recorder,
-                        VHR_EVENT_TRANSPOSE_CHANGE, (uint8_t)(int8_t)pSwara->semitones, 0, 0, nowUs);
+                        VHR_EVENT_TRANSPOSE_CHANGE, (uint8_t)(int8_t)pNote->semitones, 0, 0, nowUs);
                 }
 
                 s_current_key_idx = key_idx;
-                Serial.printf(" -> Key %d [%s] | Pitch: %.4fx (%+d st) | MIDI %u (Attack Retrigger)\n",
-                              key_idx + 1, pSwara->name, pSwara->pitch_ratio, pSwara->semitones, pSwara->midi_note);
-            } else {
-                Serial.println();
+                uint8_t r = (uint8_t)(key_idx / MATRIX_COLS);
+                uint8_t c = (uint8_t)(key_idx % MATRIX_COLS);
+                Serial.printf("[KEYBOARD] Row %u (GPIO%2d), Col %u (KC%u) -> Key %2d [%-10s] | Pitch: %7.4fx (%+3d st) | MIDI %2u\n",
+                              r, ROW_PINS[r], c, c, key_idx + 1, pNote->name, pNote->pitch_ratio, pNote->semitones, pNote->midi_note);
             }
         } else {
             /* Keys released: stop audio playback immediately */
@@ -435,12 +513,10 @@ static void process_keyboard(void)
             if (s_current_key_idx >= 0) {
                 if (g_rec_state == REC_RECORDING) {
                     vhl_recorder_push_event(&g_recorder,
-                        VHR_EVENT_NOTE_OFF, SWARAS[s_current_key_idx].midi_note, 0, 0, nowUs);
+                        VHR_EVENT_NOTE_OFF, g_keyboard[s_current_key_idx].midi_note, 0, 0, nowUs);
                 }
-                Serial.printf(" -> Released [%s] (sound stopped)\n", SWARAS[s_current_key_idx].name);
+                Serial.printf("[KEYBOARD] Released [%s] (sound stopped)\n", g_keyboard[s_current_key_idx].name);
                 s_current_key_idx = -1;
-            } else {
-                Serial.println(" -> None");
             }
         }
     }
@@ -456,26 +532,55 @@ void setup()
     delay(300);
 
     Serial.println("\n============================================================");
-    Serial.println(" ESP32 Digital Harmonium — 8-Key 74HC165 Workstation");
+    Serial.println(" ESP32 Digital Harmonium — 61-Key Matrix Workstation (1000 Hz)");
     Serial.println("============================================================");
 
-    /* 1. 74HC165 Shift Register Pins */
-    pinMode(HC165_LOAD_PIN, OUTPUT);
-    pinMode(HC165_CLOCK_PIN, OUTPUT);
-    pinMode(HC165_DATA_PIN, INPUT);
-    digitalWrite(HC165_CLOCK_PIN, LOW);
-    digitalWrite(HC165_LOAD_PIN, HIGH);
-
-    Serial.println("--- 74HC165 KEYBOARD CONFIG ---");
-    Serial.printf("LOAD_PIN  : GPIO%d\n", HC165_LOAD_PIN);
-    Serial.printf("CLOCK_PIN : GPIO%d\n", HC165_CLOCK_PIN);
-    Serial.printf("DATA_PIN  : GPIO%d\n", HC165_DATA_PIN);
-    Serial.println("Swaras (8 Keys):");
-    for (int i = 0; i < 8; i++) {
-        Serial.printf("  Key %d: %-3s | Pitch: %.4fx | Semitones: %+3d | MIDI: %u\n",
-                      i + 1, SWARAS[i].name, SWARAS[i].pitch_ratio, SWARAS[i].semitones, SWARAS[i].midi_note);
+    /* 1. Matrix Row Pins (all set to high-impedance INPUT at boot) */
+    for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+        pinMode(ROW_PINS[r], INPUT);
     }
-    Serial.println("--------------------------------\n");
+
+    /* 74HC165 Column Shift Register Pins */
+    pinMode(HC165_QH_PIN, INPUT);
+    pinMode(HC165_CLK_PIN, OUTPUT);
+    pinMode(HC165_SHLD_PIN, OUTPUT);
+    digitalWrite(HC165_CLK_PIN, LOW);
+    digitalWrite(HC165_SHLD_PIN, HIGH);
+
+    /* Build 61-Key Table (5 Octaves: C2 to C7) */
+    static const char* const NOTE_NAMES[12] = {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+    for (int i = 0; i < (int)TOTAL_KEYS; i++) {
+        int semitones = i - KEY_ROOT_INDEX;
+        int oct = 2 + (i / 12);
+        int note_idx = i % 12;
+        if (i == KEY_ROOT_INDEX) {
+            snprintf(g_keyboard[i].name, sizeof(g_keyboard[i].name), "C4 (Root)");
+        } else {
+            snprintf(g_keyboard[i].name, sizeof(g_keyboard[i].name), "%s%d", NOTE_NAMES[note_idx], oct);
+        }
+        g_keyboard[i].pitch_ratio = powf(2.0f, (float)semitones / 12.0f);
+        g_keyboard[i].semitones   = (int8_t)semitones;
+        g_keyboard[i].midi_note   = (uint8_t)(KEY_BASE_MIDI + i);
+    }
+
+    Serial.println("--- 61-KEY MATRIX KEYBOARD CONFIG ---");
+    Serial.printf("Total Keys    : %u (5 octaves: C2 to C7)\n", TOTAL_KEYS);
+    Serial.printf("Matrix Rate   : 1000 Hz (125 us per row, 8 rows)\n");
+    Serial.printf("Row Pins      : R0=%d, R1=%d, R2=%d, R3=%d, R4=%d, R5=%d, R6=%d, R7=%d\n",
+                  ROW_PINS[0], ROW_PINS[1], ROW_PINS[2], ROW_PINS[3],
+                  ROW_PINS[4], ROW_PINS[5], ROW_PINS[6], ROW_PINS[7]);
+    Serial.printf("165 Col Pins  : QH=GPIO%d, CLK=GPIO%d, /SH-LD=GPIO%d\n",
+                  HC165_QH_PIN, HC165_CLK_PIN, HC165_SHLD_PIN);
+    Serial.printf("Root Key      : Key %d [%s] -> 1.0000x pitch (MIDI %u)\n",
+                  KEY_ROOT_INDEX + 1, g_keyboard[KEY_ROOT_INDEX].name, g_keyboard[KEY_ROOT_INDEX].midi_note);
+    Serial.printf("First Key     : Key 1  [%s] -> %.4fx pitch (MIDI %u, %d st)\n",
+                  g_keyboard[0].name, g_keyboard[0].pitch_ratio, g_keyboard[0].midi_note, g_keyboard[0].semitones);
+    Serial.printf("Last Key      : Key 61 [%s] -> %.4fx pitch (MIDI %u, %+d st)\n",
+                  g_keyboard[TOTAL_KEYS - 1].name, g_keyboard[TOTAL_KEYS - 1].pitch_ratio,
+                  g_keyboard[TOTAL_KEYS - 1].midi_note, g_keyboard[TOTAL_KEYS - 1].semitones);
+    Serial.println("-------------------------------------\n");
 
     /* 2. Load Harmonium VHL Package */
     vhl_err_t err = vhl_loader_init(&g_vhl_loader,
@@ -639,7 +744,7 @@ void loop()
             uint32_t nowUs = (uint32_t)esp_timer_get_time();
             if (s_current_key_idx >= 0) {
                 vhl_recorder_push_event(&g_recorder,
-                    VHR_EVENT_NOTE_OFF, SWARAS[s_current_key_idx].midi_note, 0, 0, nowUs);
+                    VHR_EVENT_NOTE_OFF, g_keyboard[s_current_key_idx].midi_note, 0, 0, nowUs);
             }
 
             vhl_recorder_stop(&g_recorder);
@@ -667,5 +772,5 @@ void loop()
         }
     }
 
-    delay(5);
+    yield();
 }
