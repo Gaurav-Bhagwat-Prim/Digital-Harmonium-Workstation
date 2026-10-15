@@ -69,7 +69,7 @@ vhl_err_t vhl_poly_synth_init(vhl_poly_synth_t* pSynth)
     }
 
     memset(pSynth, 0, sizeof(vhl_poly_synth_t));
-    pSynth->masterVolume      = 0.8f;
+    pSynth->masterVolume      = 0.6f;
     pSynth->voiceAllocCounter = 1;
 
     // Default VHL Instrument Params
