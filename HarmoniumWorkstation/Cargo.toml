@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 eframe = { version = "0.29", default-features = true }
 egui = "0.29"
+byteorder = "1.5"

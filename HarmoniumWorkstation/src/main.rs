@@ -1,5 +1,6 @@
 mod theme;
 mod app;
+pub mod vhl;
 
 use app::HarmoniumApp;
 
