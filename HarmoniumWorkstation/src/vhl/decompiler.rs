@@ -29,7 +29,7 @@ impl VhlDecompiler {
         let mut magic = [0u8; 4];
         cur.read_exact(&mut magic).unwrap();
         let version_major = cur.read_u8().map_err(|e| e.to_string())?;
-        let version_minor = cur.read_u8().map_err(|e| e.to_string())?;
+        let _version_minor = cur.read_u8().map_err(|e| e.to_string())?;
         if version_major != VHL_VERSION_MAJOR {
             return Err(format!("Unsupported VHL Major Version: {} (expected {})", version_major, VHL_VERSION_MAJOR));
         }

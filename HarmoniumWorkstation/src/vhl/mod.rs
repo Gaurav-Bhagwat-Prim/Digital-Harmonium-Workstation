@@ -2,6 +2,7 @@ pub mod types;
 pub mod crc32;
 pub mod compiler;
 pub mod decompiler;
+pub mod wav_reader;
 
 #[cfg(test)]
 mod tests {

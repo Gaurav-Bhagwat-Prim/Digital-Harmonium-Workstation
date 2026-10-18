@@ -7,3 +7,5 @@ edition = "2024"
 eframe = { version = "0.29", default-features = true }
 egui = "0.29"
 byteorder = "1.5"
+rfd = "0.15"
+cpal = "0.15"

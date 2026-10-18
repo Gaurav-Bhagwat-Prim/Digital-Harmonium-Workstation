@@ -1,6 +1,7 @@
 mod theme;
 mod app;
 pub mod vhl;
+pub mod audio_engine;
 
 use app::HarmoniumApp;
 
