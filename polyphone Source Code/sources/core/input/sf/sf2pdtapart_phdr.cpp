@@ -1,0 +1,83 @@
+/***************************************************************************
+**                                                                        **
+**  Polyphone, a soundfont editor                                         **
+**  Copyright (C) 2013-2024 Davy Triponney                                **
+**                                                                        **
+**  This program is free software: you can redistribute it and/or modify  **
+**  it under the terms of the GNU General Public License as published by  **
+**  the Free Software Foundation, either version 3 of the License, or     **
+**  (at your option) any later version.                                   **
+**                                                                        **
+**  This program is distributed in the hope that it will be useful,       **
+**  but WITHOUT ANY WARRANTY; without even the implied warranty of        **
+**  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the          **
+**  GNU General Public License for more details.                          **
+**                                                                        **
+**  You should have received a copy of the GNU General Public License     **
+**  along with this program. If not, see http://www.gnu.org/licenses/.    **
+**                                                                        **
+****************************************************************************
+**           Author: Davy Triponney                                       **
+**  Website/Contact: https://www.polyphone.io                             **
+**             Date: 01.01.2013                                           **
+***************************************************************************/
+
+#include "sf2pdtapart_phdr.h"
+#include <QDataStream>
+
+Sf2PdtaPart_phdr::Sf2PdtaPart_phdr() :
+    _isValid(false),
+    _preset(0),
+    _bank(0),
+    _pBagIndex(0),
+    _library(0),
+    _genre(0),
+    _morphology(0)
+{
+
+}
+
+QDataStream & operator >> (QDataStream &in, Sf2PdtaPart_phdr &phdr)
+{
+    // Name
+    int length = 20;
+    QByteArray buffer(length + 1, Qt::Uninitialized);
+    if (in.readRawData(buffer.data(), length) != length)
+        return in;
+    buffer[20] = 0;
+    phdr._name = QString::fromLatin1(buffer.data()).trimmed();
+
+    // Preset, bank
+    in >> phdr._preset >> phdr._bank;
+
+    // Min index for pBag
+    in >> phdr._pBagIndex;
+
+    // Characteristics
+    in >> phdr._library >> phdr._genre >> phdr._morphology;
+
+    phdr._isValid = true;
+    return in;
+}
+
+QDataStream & operator << (QDataStream &out, Sf2PdtaPart_phdr &phdr)
+{
+    // Name
+    QByteArray data = phdr._name.toLatin1().left(20);
+    if (out.writeRawData(data.constData(), data.length()) != data.length())
+        return out;
+    for (int i = 0; i < 20 - data.length(); i++)
+        out.writeRawData("\0", 1);
+
+    // Preset, bank
+    out << phdr._preset << phdr._bank;
+
+    // Min index for pBag
+    out << phdr._pBagIndex;
+
+    // Characteristics
+    out << phdr._library << phdr._genre << phdr._morphology;
+
+    phdr._isValid = true;
+    return out;
+}

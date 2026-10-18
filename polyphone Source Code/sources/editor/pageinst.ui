@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PageInst</class>
+ <widget class="QWidget" name="PageInst">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>607</width>
+    <height>385</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string notr="true"/>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="TableWidgetInst" name="tableInst">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <property name="autoScroll">
+      <bool>true</bool>
+     </property>
+     <property name="editTriggers">
+      <set>QAbstractItemView::AnyKeyPressed|QAbstractItemView::DoubleClicked|QAbstractItemView::SelectedClicked</set>
+     </property>
+     <property name="showDropIndicator" stdset="0">
+      <bool>false</bool>
+     </property>
+     <property name="dragDropOverwriteMode">
+      <bool>false</bool>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::ExtendedSelection</enum>
+     </property>
+     <property name="textElideMode">
+      <enum>Qt::ElideMiddle</enum>
+     </property>
+     <property name="horizontalScrollMode">
+      <enum>QAbstractItemView::ScrollPerPixel</enum>
+     </property>
+     <property name="cornerButtonEnabled">
+      <bool>false</bool>
+     </property>
+     <attribute name="verticalHeaderMinimumSectionSize">
+      <number>10</number>
+     </attribute>
+    </widget>
+   </item>
+   <item>
+    <widget class="ModulatorEditor" name="modulatorEditor" native="true"/>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>TableWidgetInst</class>
+   <extends>QTableWidget</extends>
+   <header>pageinst.h</header>
+  </customwidget>
+  <customwidget>
+   <class>ModulatorEditor</class>
+   <extends>QWidget</extends>
+   <header>modulatoreditor.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>tableInst</sender>
+   <signal>cellChanged(int,int)</signal>
+   <receiver>PageInst</receiver>
+   <slot>set(int,int)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>282</x>
+     <y>188</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>282</x>
+     <y>188</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>tableInst</sender>
+   <signal>itemSelectionChanged()</signal>
+   <receiver>PageInst</receiver>
+   <slot>selected()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>282</x>
+     <y>188</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>282</x>
+     <y>188</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+ <slots>
+  <slot>set(int,int)</slot>
+  <slot>selected()</slot>
+  <slot>setAmount()</slot>
+  <slot>afficheEditMod()</slot>
+  <slot>setAbs()</slot>
+  <slot>setSourceAmountType(int,int)</slot>
+  <slot>setSourceType(int,int)</slot>
+  <slot>setDest(int)</slot>
+  <slot>setSource(int)</slot>
+  <slot>setSource2(int)</slot>
+  <slot>nouveauMod()</slot>
+  <slot>supprimerMod()</slot>
+  <slot>copyMod()</slot>
+  <slot>pasteMod()</slot>
+ </slots>
+</ui>

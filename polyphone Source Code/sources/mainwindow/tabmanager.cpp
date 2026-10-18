@@ -1,0 +1,460 @@
+/***************************************************************************
+**                                                                        **
+**  Polyphone, a soundfont editor                                         **
+**  Copyright (C) 2013-2024 Davy Triponney                                **
+**                                                                        **
+**  This program is free software: you can redistribute it and/or modify  **
+**  it under the terms of the GNU General Public License as published by  **
+**  the Free Software Foundation, either version 3 of the License, or     **
+**  (at your option) any later version.                                   **
+**                                                                        **
+**  This program is distributed in the hope that it will be useful,       **
+**  but WITHOUT ANY WARRANTY; without even the implied warranty of        **
+**  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the          **
+**  GNU General Public License for more details.                          **
+**                                                                        **
+**  You should have received a copy of the GNU General Public License     **
+**  along with this program. If not, see http://www.gnu.org/licenses/.    **
+**                                                                        **
+****************************************************************************
+**           Author: Davy Triponney                                       **
+**  Website/Contact: https://www.polyphone.io                             **
+**             Date: 01.01.2013                                           **
+***************************************************************************/
+
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QAbstractButton>
+#include <QApplication>
+#include "tabmanager.h"
+#include "contextmanager.h"
+#include "configpanel.h"
+#include "mainwindow.h"
+#include "soundfontbrowser.h"
+#include "mainstackedwidget.h"
+#include "soundfontmanager.h"
+#include "soundfontfilter.h"
+#include "soundfontviewer.h"
+#include "editor.h"
+#include "player.h"
+#include "userarea.h"
+#include "inputfactory.h"
+#include "outputfactory.h"
+#include "repositorymanager.h"
+#include "utils.h"
+#include "synth.h"
+#include "editortoolbar.h"
+#include "directorybrowser.h"
+
+TabManager * TabManager::s_instance = nullptr;
+
+TabManager * TabManager::prepareInstance(DialogKeyboard * dialogKeyboard, MainStackedWidget * stackedWidget)
+{
+    delete s_instance;
+    s_instance = new TabManager(dialogKeyboard, stackedWidget);
+    return s_instance;
+}
+
+TabManager * TabManager::getInstance()
+{
+    return s_instance;
+}
+
+void TabManager::kill()
+{
+    delete s_instance;
+    s_instance = nullptr;
+}
+
+TabManager::TabManager(DialogKeyboard * dialogKeyboard, MainStackedWidget * stackedWidget) : QObject(nullptr),
+    _dialogKeyboard(dialogKeyboard),
+    _stackedWidget(stackedWidget),
+    _configTab(new ConfigPanel()),
+    _browserTab(new SoundfontBrowser()),
+    _userTab(new UserArea())
+{
+    SoundfontManager * sf2 = SoundfontManager::getInstance();
+    connect(sf2, SIGNAL(editingDone(QString,QList<int>)), this, SLOT(editingDone(QString,QList<int>)));
+    connect(_stackedWidget, SIGNAL(tabCloseRequested(QWidget*)), this, SLOT(onTabCloseRequested(QWidget*)));
+    connect(_stackedWidget, SIGNAL(currentChanged(int)), this, SLOT(onTabIndexChanged(int)));
+}
+
+TabManager::~TabManager()
+{
+    // Save the state of the keyboard and recorder windows
+    saveWindowState();
+
+    delete _configTab;
+    delete _browserTab;
+    delete _userTab;
+    while (_stackedWidget->count() > 0)
+    {
+        Tab * tab = (Tab *)_stackedWidget->widget(0);
+        _stackedWidget->removeWidgetWithTab(tab);
+    }
+    QApplication::processEvents();
+    while (!_soundfontTabs.isEmpty())
+        delete _soundfontTabs.takeFirst();
+    while (!_viewerTabs.isEmpty())
+        delete _viewerTabs.takeFirst();
+    while (!_dirBrowserTabs.isEmpty())
+        delete _dirBrowserTabs.takeFirst();
+}
+
+void TabManager::openConfiguration()
+{
+    _configTab->initializeInterface();
+    int index = _stackedWidget->indexOf(_configTab);
+    if (index == -1)
+        index = _stackedWidget->addWidgetWithTab(_configTab, ":/icons/settings.svg", tr("Settings"), false);
+    _stackedWidget->setCurrentIndex(index);
+}
+
+void TabManager::openNewSoundfont()
+{
+    // Create a new editor
+    Editor * editor = new Editor(_dialogKeyboard, EltID(elementSf2));
+    int index = _stackedWidget->addWidgetWithTab(editor, ":/icons/file-audio.svg", "", true);
+    connect(editor, SIGNAL(tabTitleChanged(QString)), this, SLOT(onTabTitleChanged(QString)));
+    connect(editor, SIGNAL(filePathChanged(QString)), this, SLOT(onFilePathChanged(QString)));
+    connect(editor, SIGNAL(keyboardDisplayChanged(bool)), this, SIGNAL(keyboardDisplayChanged(bool)));
+    connect(editor, SIGNAL(recorderDisplayChanged(bool)), this, SIGNAL(recorderDisplayChanged(bool)));
+    _soundfontTabs << editor;
+
+    // Initialize and display it
+    editor->initialize(InputFactory::getInput(""), true);
+    _stackedWidget->setCurrentIndex(index);
+}
+
+void TabManager::openSoundfont(QString fileName, PlayerOptions *playerOptions, bool async, EltID initialSelection)
+{
+    fileName = Utils::fixFilePath(fileName);
+
+    // Extension supported?
+    if (!InputFactory::isSuffixSupported(QFileInfo(fileName).suffix()))
+    {
+        QMessageBox::warning(_stackedWidget, tr("Warning"),
+                             tr("Cannot open file \"%1\"").arg(fileName));
+        return;
+    }
+    ContextManager::recentFile()->addRecentFile(RecentFileManager::FILE_TYPE_SOUNDFONT, fileName);
+
+    // Check if the file is not already open?
+    SoundfontManager * sf2 = SoundfontManager::getInstance();
+    int indexSf2 = -1;
+    EltID idSf2(elementSf2);
+    foreach (int i, sf2->getSiblings(idSf2))
+    {
+        if (sf2->getQstr(EltID(elementSf2, i), champ_filenameInitial) == fileName)
+        {
+            indexSf2 = i;
+            break;
+        }
+    }
+
+    // Find the corresponding editor if the file is already open (not in synth mode)
+    if (!ContextManager::s_playerMode && indexSf2 != -1)
+    {
+        foreach (SoundfontTab * tab, _soundfontTabs)
+        {
+            if (tab->getSf2Index() == indexSf2)
+            {
+                initialSelection.indexSf2 = indexSf2;
+                Editor * editor = (Editor *)tab;
+                editor->selectElement(initialSelection);
+
+                int index = _stackedWidget->indexOf(tab);
+                _stackedWidget->setCurrentIndex(index);
+                return;
+            }
+        }
+    }
+
+    // Otherwise, create a new editor or player
+    SoundfontTab * tab = ContextManager::s_playerMode ? (SoundfontTab *)(new Player(playerOptions)) : (SoundfontTab *)(new Editor(_dialogKeyboard, initialSelection));
+    int index = _stackedWidget->addWidgetWithTab(tab, ":/icons/file-audio.svg", QFileInfo(fileName).baseName(), true);
+    connect(tab, SIGNAL(tabTitleChanged(QString)), this, SLOT(onTabTitleChanged(QString)));
+    connect(tab, SIGNAL(filePathChanged(QString)), this, SLOT(onFilePathChanged(QString)));
+    connect(tab, SIGNAL(keyboardDisplayChanged(bool)), this, SIGNAL(keyboardDisplayChanged(bool)));
+    connect(tab, SIGNAL(recorderDisplayChanged(bool)), this, SIGNAL(recorderDisplayChanged(bool)));
+    _soundfontTabs << tab;
+
+    // Initialize and display it
+    _stackedWidget->setCurrentIndex(index);
+    if (indexSf2 == -1)
+        tab->initialize(InputFactory::getInput(fileName), async);
+    else
+        tab->initializeWithSoundfontIndex(indexSf2);
+
+    // Possibly open the keyboard and recorder windows
+    if (_soundfontTabs.count() == 1)
+    {
+        if (ContextManager::configuration()->getValue(ConfManager::SECTION_DISPLAY, "keyboard_open", false).toBool())
+            emit keyboardDisplayChanged(true);
+        if (ContextManager::configuration()->getValue(ConfManager::SECTION_DISPLAY, "recorder_open", false).toBool())
+            emit recorderDisplayChanged(true);
+    }
+}
+
+void TabManager::openDirectory(QString directoryPath)
+{
+    directoryPath = Utils::fixFilePath(directoryPath);
+
+    // Check that the directory is not already open
+    foreach (DirectoryBrowser * browser, _dirBrowserTabs)
+    {
+        if (browser->getDirectoryPath() == directoryPath)
+        {
+            int index = _stackedWidget->indexOf(browser);
+            _stackedWidget->setCurrentIndex(index);
+            return;
+        }
+    }
+    ContextManager::recentFile()->addRecentFile(RecentFileManager::FILE_TYPE_SOUNDFONT, directoryPath);
+
+    // Name of the directory
+    QDir dir(directoryPath);
+    QString dirName = dir.dirName();
+
+    // Create a new browser
+    DirectoryBrowser * browser = new DirectoryBrowser();
+    connect(browser, SIGNAL(itemDoubleClicked(QString,EltID)), this, SLOT(openSoundfont(QString,EltID)));
+    int index = _stackedWidget->addWidgetWithTab(browser, ":/icons/folder.svg", dirName, true);
+    _stackedWidget->setTabToolTip(browser, directoryPath);
+    _dirBrowserTabs << browser;
+
+    // Initialize and display it
+    browser->initialize(directoryPath);
+    _stackedWidget->setCurrentIndex(index);
+}
+
+void TabManager::openSoundfont(QString filePath, EltID id)
+{
+    openSoundfont(filePath, nullptr, true, id);
+}
+
+void TabManager::openRepository(SoundfontFilter *filter)
+{
+    if (filter)
+    {
+        _browserTab->applyFilter(filter);
+        delete filter;
+    }
+    int index = _stackedWidget->indexOf(_browserTab);
+    if (index == -1)
+        index = _stackedWidget->addWidgetWithTab(_browserTab, ":/icons/globe.svg", tr("Online repository"), true);
+    _stackedWidget->setCurrentIndex(index);
+}
+
+void TabManager::editingDone(QString source, QList<int> sf2Indexes)
+{
+    // Update all editing pages related to one of the edited sf2
+    foreach (SoundfontTab * tab, _soundfontTabs)
+        if (sf2Indexes.contains(tab->getSf2Index()))
+            tab->update(source);
+}
+
+void TabManager::onTabTitleChanged(QString title)
+{
+    _stackedWidget->setTabLabel(dynamic_cast<SoundfontTab *>(QObject::sender()), title);
+}
+
+void TabManager::onFilePathChanged(QString filePath)
+{
+    _stackedWidget->setTabToolTip(dynamic_cast<SoundfontTab *>(QObject::sender()), filePath);
+}
+
+void TabManager::onTabCloseRequested(QWidget * widget)
+{
+    SoundfontManager * sf2 = SoundfontManager::getInstance();
+    if (_soundfontTabs.contains(dynamic_cast<SoundfontTab *>(widget)))
+    {
+        // Close a soundfont
+        SoundfontTab * soundfontTab = dynamic_cast<SoundfontTab *>(widget);
+        soundfontTab->setFocus();
+
+        int ret;
+        EltID id(elementSf2, soundfontTab->getSf2Index());
+        if (sf2->isEdited(id.indexSf2) && !ContextManager::s_playerMode)
+        {
+            QMessageBox msgBox(_stackedWidget);
+            msgBox.setIcon(QMessageBox::Warning);
+            id.typeElement = elementSf2;
+            msgBox.setText("<b>" + tr("Save before exiting?") + "</b>");
+            QString filename = sf2->getQstr(id, champ_name);
+            if (filename.isEmpty())
+                filename = tr("untitled");
+            msgBox.setInformativeText(tr("File \"%1\" has been modified.").arg(filename));
+            msgBox.setWindowTitle(tr("Warning"));
+            msgBox.setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+            msgBox.button(QMessageBox::Save)->setText(tr("&Save"));
+            msgBox.button(QMessageBox::Cancel)->setText(tr("&Cancel"));
+            msgBox.button(QMessageBox::Discard)->setText(tr("Do&n't save"));
+            msgBox.button(QMessageBox::Save)->setIcon(QIcon::fromTheme("filesave"));
+            msgBox.setDefaultButton(QMessageBox::Save);
+            ret = msgBox.exec();
+        }
+        else
+            ret = QMessageBox::Discard;
+
+        // Possibly cancel the close action
+        switch (ret)
+        {
+        case QMessageBox::Cancel:
+            return;
+        case QMessageBox::Save:
+            if (!OutputFactory::save(id.indexSf2, false))
+                return;
+            break;
+        case QMessageBox::Discard:
+            break;
+        }
+
+        // Delete the tab
+        _soundfontTabs.removeAll(soundfontTab);
+        _stackedWidget->removeWidgetWithTab(soundfontTab);
+        delete soundfontTab;
+
+        // Mute all sounds produced by the soundfont, if any
+        ContextManager::audio()->getSynth()->play(id, -2, -2, 0);
+
+        // Delete the model linked to the soundfont if no other tabs use it
+        if (id.indexSf2 >= 0)
+        {
+            bool used = false;
+            foreach (SoundfontTab * otherTab, _soundfontTabs)
+            {
+                if (otherTab == soundfontTab)
+                    continue;
+
+                if (otherTab->getSf2Index() == id.indexSf2)
+                {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used)
+                sf2->remove(id);
+        }
+
+        if (_soundfontTabs.empty())
+        {
+            // Save the state of the keyboard and recorder windows
+            saveWindowState();
+
+            // Close them
+            emit keyboardDisplayChanged(false, false);
+            emit recorderDisplayChanged(false, false);
+        }
+    }
+    else if (widget == dynamic_cast<QWidget*>(_configTab))
+    {
+        // Close the configurations
+        _stackedWidget->removeWidgetWithTab(_configTab);
+    }
+    else if (widget == dynamic_cast<QWidget*>(_browserTab))
+    {
+        // Close the soundfont browser
+        _stackedWidget->removeWidgetWithTab(_browserTab);
+    }
+    else if (widget == dynamic_cast<QWidget*>(_userTab))
+    {
+        // Close the user area
+        _stackedWidget->removeWidgetWithTab(_userTab);
+    }
+    else if (_viewerTabs.contains(dynamic_cast<SoundfontViewer*>(widget)))
+    {
+        // Close a soundfont from the repository
+        SoundfontViewer * viewer = dynamic_cast<SoundfontViewer*>(widget);
+        _viewerTabs.removeAll(viewer);
+        Tab * tab = dynamic_cast<Tab *>(widget);
+        _stackedWidget->removeWidgetWithTab(tab);
+        delete viewer;
+    }
+    else if (_dirBrowserTabs.contains(dynamic_cast<DirectoryBrowser*>(widget)))
+    {
+        // Close a directory browser
+        DirectoryBrowser * browser = dynamic_cast<DirectoryBrowser*>(widget);
+        _dirBrowserTabs.removeAll(browser);
+        Tab * tab = dynamic_cast<Tab *>(widget);
+        _stackedWidget->removeWidgetWithTab(tab);
+        delete browser;
+    }
+}
+
+int TabManager::getCurrentSf2()
+{
+    QWidget * widget = _stackedWidget->currentWidget();
+    if (_soundfontTabs.contains(dynamic_cast<SoundfontTab *>(widget)))
+    {
+        SoundfontTab * tab = dynamic_cast<SoundfontTab *>(widget);
+        return tab->getSf2Index();
+    }
+    return -1;
+}
+
+void TabManager::closeCurrentTab()
+{
+    this->onTabCloseRequested(_stackedWidget->currentWidget());
+}
+
+void TabManager::onTabIndexChanged(int tabIndex)
+{
+    QWidget * widget = _stackedWidget->widget(tabIndex);
+    emit tabOpen(_soundfontTabs.contains(dynamic_cast<SoundfontTab*>(widget)), !_soundfontTabs.empty(), _stackedWidget->currentIndex() > 0);
+}
+
+void TabManager::openUser()
+{
+    _userTab->initializeInterface();
+    int index = _stackedWidget->indexOf(_userTab);
+    if (index == -1)
+        index = _stackedWidget->addWidgetWithTab(_userTab, ":/icons/user.svg", tr("User area"), false);
+    _stackedWidget->setCurrentIndex(index);
+}
+
+void TabManager::openRepositorySoundfont(int id)
+{
+    // Find the corresponding viewer if the file is already open
+    foreach (SoundfontViewer * viewer, _viewerTabs)
+    {
+        if (viewer->getSoundfontId() == id)
+        {
+            int index = _stackedWidget->indexOf(viewer);
+            _stackedWidget->setCurrentIndex(index);
+            return;
+        }
+    }
+
+    // Title of the soundfont
+    SoundfontInformation * si = RepositoryManager::getInstance()->getSoundfontInformation(id);
+    if (si == nullptr)
+        return;
+
+    // Create a new viewer
+    SoundfontViewer * viewer = new SoundfontViewer();
+    connect(viewer, SIGNAL(itemClicked(SoundfontFilter*)), this, SLOT(openRepository(SoundfontFilter*)));
+    int index = _stackedWidget->addWidgetWithTab(viewer, ":/icons/file-description.svg", si->getTitle(), true);
+    _viewerTabs << viewer;
+
+    // Initialize and display it
+    viewer->initialize(id, false);
+    _stackedWidget->setCurrentIndex(index);
+}
+
+void TabManager::showHome()
+{
+    _stackedWidget->setCurrentIndex(0);
+}
+
+void TabManager::setCurrentWidget(QWidget * widget)
+{
+    if (widget != nullptr)
+        _stackedWidget->setCurrentWidget(widget);
+}
+
+void TabManager::saveWindowState()
+{
+    ContextManager::configuration()->setValue(ConfManager::SECTION_DISPLAY, "keyboard_open", EditorToolBar::isKeyboardOpen());
+    ContextManager::configuration()->setValue(ConfManager::SECTION_DISPLAY, "recorder_open", EditorToolBar::isRecorderOpen());
+}

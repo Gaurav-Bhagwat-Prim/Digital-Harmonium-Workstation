@@ -52,7 +52,7 @@ vhl_err_t vhl_single_voice_init(vhl_single_voice_t* pVoice)
     pVoice->state      = VHL_VOICE_STATE_STOPPED;
     pVoice->interpMode = INTERPOLATION_MODE_CUBIC;
     pVoice->pitchRatio = 1.0f;
-    pVoice->rootKey    = 60; // C4
+    pVoice->rootKey    = 62; // D4
 
     return VHL_OK;
 }
@@ -74,7 +74,7 @@ vhl_err_t vhl_single_voice_bind_sample(vhl_single_voice_t* pVoice,
     pVoice->loopStartFrame  = loopStart;
     pVoice->loopEndFrame    = (loopEnd > 0 && loopEnd <= totalFrames) ? loopEnd : totalFrames;
     pVoice->isLooped        = isLooped;
-    pVoice->rootKey         = (rootKey > 0) ? rootKey : 60;
+    pVoice->rootKey         = (rootKey > 0) ? rootKey : 62; // Default to D4
     pVoice->phase           = 0.0;
     pVoice->state           = VHL_VOICE_STATE_STOPPED;
 
@@ -151,8 +151,12 @@ vhl_err_t vhl_single_voice_render(vhl_single_voice_t* pVoice,
         float outSample = 0.0f;
 
         if (pVoice->interpMode == INTERPOLATION_MODE_LINEAR) {
+            int32_t idx_next = (int32_t)idx1 + 1;
+            if (pVoice->isLooped && pVoice->loopEndFrame > pVoice->loopStartFrame && (uint32_t)idx_next >= pVoice->loopEndFrame) {
+                idx_next = (int32_t)pVoice->loopStartFrame;
+            }
             float s0 = fetch_sample(pVoice->pSampleData, (int32_t)idx1, pVoice->totalFrames);
-            float s1 = fetch_sample(pVoice->pSampleData, (int32_t)idx1 + 1, pVoice->totalFrames);
+            float s1 = fetch_sample(pVoice->pSampleData, idx_next, pVoice->totalFrames);
             outSample = interpolate_linear(s0, s1, frac);
         } else { // CUBIC
             float s0 = fetch_sample(pVoice->pSampleData, (int32_t)idx1 - 1, pVoice->totalFrames);

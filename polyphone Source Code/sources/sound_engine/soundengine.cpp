@@ -1,0 +1,236 @@
+/***************************************************************************
+**                                                                        **
+**  Polyphone, a soundfont editor                                         **
+**  Copyright (C) 2013-2024 Davy Triponney                                **
+**                2014      Andrea Celani                                 **
+**                                                                        **
+**  This program is free software: you can redistribute it and/or modify  **
+**  it under the terms of the GNU General Public License as published by  **
+**  the Free Software Foundation, either version 3 of the License, or     **
+**  (at your option) any later version.                                   **
+**                                                                        **
+**  This program is distributed in the hope that it will be useful,       **
+**  but WITHOUT ANY WARRANTY; without even the implied warranty of        **
+**  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the          **
+**  GNU General Public License for more details.                          **
+**                                                                        **
+**  You should have received a copy of the GNU General Public License     **
+**  along with this program. If not, see http://www.gnu.org/licenses/.    **
+**                                                                        **
+****************************************************************************
+**           Author: Davy Triponney                                       **
+**  Website/Contact: https://www.polyphone.io                             **
+**             Date: 01.01.2013                                           **
+***************************************************************************/
+
+#include "soundengine.h"
+#include "voicelist.h"
+#include "voice.h"
+#include "fastmaths.h"
+#include <QThread>
+
+VoiceList * SoundEngine::s_voices = nullptr;
+
+SoundEngine::SoundEngine(quint32 bufferSize) : QObject(),
+    _interrupted(false),
+    _runningState(0)
+{
+    _dataL = new float[bufferSize];
+    _dataR = new float[bufferSize];
+    memset(_dataL, 0, bufferSize * sizeof(float));
+    memset(_dataR, 0, bufferSize * sizeof(float));
+
+    _dataRevL = new float[bufferSize];
+    _dataRevR = new float[bufferSize];
+    memset(_dataRevL, 0, bufferSize * sizeof(float));
+    memset(_dataRevR, 0, bufferSize * sizeof(float));
+
+    _dataChoL = new float[bufferSize];
+    _dataChoR = new float[bufferSize];
+    memset(_dataChoL, 0, bufferSize * sizeof(float));
+    memset(_dataChoR, 0, bufferSize * sizeof(float));
+
+    _dataChoRevL = new float[bufferSize];
+    _dataChoRevR = new float[bufferSize];
+    memset(_dataChoRevL, 0, bufferSize * sizeof(float));
+    memset(_dataChoRevR, 0, bufferSize * sizeof(float));
+
+    _voiceData = new float[bufferSize];
+    memset(_voiceData, 0, bufferSize * sizeof(float));
+
+    _mutexSynchro.lock();
+}
+
+SoundEngine::~SoundEngine()
+{
+    delete [] _dataL;
+    delete [] _dataR;
+    delete [] _dataRevL;
+    delete [] _dataRevR;
+    delete [] _dataChoL;
+    delete [] _dataChoR;
+    delete [] _dataChoRevL;
+    delete [] _dataChoRevR;
+    delete [] _voiceData;
+}
+
+// DATA GENERATION //
+
+void SoundEngine::start()
+{
+    // Generate and copy data into the buffer after each reading
+    while (true)
+    {
+        // Lock not needed if the running state if 3
+        if (!_runningState.testAndSetRelaxed(3, 1))
+            _mutexSynchro.lock();
+
+        if (_interrupted)
+        {
+            _mutexSynchro.unlock();
+            return;
+        }
+
+        // Generate data
+        generateData(_lenToPrepare);
+    }
+}
+
+void SoundEngine::stop()
+{
+    _interrupted = true;
+    _mutexSynchro.tryLock();
+    _mutexSynchro.unlock();
+}
+
+void SoundEngine::prepareData(quint32 len)
+{
+    _lenToPrepare = len;
+    memset(_dataL, 0, len * sizeof(float));
+    memset(_dataR, 0, len * sizeof(float));
+    memset(_dataRevL, 0, len * sizeof(float));
+    memset(_dataRevR, 0, len * sizeof(float));
+    memset(_dataChoL, 0, len * sizeof(float));
+    memset(_dataChoR, 0, len * sizeof(float));
+    memset(_dataChoRevL, 0, len * sizeof(float));
+    memset(_dataChoRevR, 0, len * sizeof(float));
+    if (_runningState.testAndSetRelaxed(2, 3))
+    {
+        // Nothing else to do, unlock not needed since the mutex will not be locked
+    }
+    else if (_runningState.testAndSetRelaxed(0, 1))
+        _mutexSynchro.unlock();
+}
+
+void SoundEngine::endCurrentProcessing()
+{
+    // Can be paused only if running
+    _runningState.testAndSetRelaxed(1, 2);
+}
+
+void SoundEngine::generateData(quint32 len)
+{
+    bool leftInitialized = false;
+    bool rightInitialized = false;
+
+    Voice * voice;
+    float tmp, coefR, coefL, coefRev, coefNonRev, coefCho, coefNonCho;
+    while (true)
+    {
+        voice = s_voices->getNextVoiceToCompute();
+        if (voice == nullptr)
+        {
+            _runningState.storeRelaxed(0);
+            break;
+        }
+        else
+        {
+            // If paused, go to the ready state et quit the loop
+            int currentValue;
+            if (_runningState.testAndSetRelaxed(2, 0, currentValue))
+                return;
+            if (currentValue == 3)
+                return;
+        }
+
+        // Get data
+        voice->generateData(_voiceData, len);
+
+        // Coeffs
+        tmp = 0.005f * (voice->getParam()->getFloat(champ_pan) + 50.f); // Between 0 and 1/2 for [0; PI/2]
+        coefL = FastMaths::fastCos(tmp);
+        coefR = FastMaths::fastSin(tmp);
+
+        coefRev = 0.01f * voice->getParam()->getFloat(champ_reverbEffectsSend);
+        coefNonRev = 1.f - coefRev;
+
+        coefCho = 0.01f * voice->getParam()->getFloat(champ_chorusEffectsSend);
+        coefNonCho = 1.f - coefCho;
+
+        // Left
+        if (coefL > 0.0f)
+        {
+            if (leftInitialized)
+            {
+                FastMaths::multiplyAdd(_dataL, _voiceData, len, coefL * coefNonRev * coefNonCho); // Left, no reverb, no chorus
+                FastMaths::multiplyAdd(_dataRevL, _voiceData, len, coefL * coefRev * coefNonCho); // Left, reverb, no chorus
+                FastMaths::multiplyAdd(_dataChoL, _voiceData, len, coefL * coefNonRev * coefCho); // Left, no reverb, chorus
+                FastMaths::multiplyAdd(_dataChoRevL, _voiceData, len, coefL * coefRev * coefCho); // Left, reverb, chorus
+            }
+            else
+            {
+                leftInitialized = true;
+                FastMaths::multiply(_dataL, _voiceData, len, coefL * coefNonRev * coefNonCho); // Left, no reverb, no chorus
+                FastMaths::multiply(_dataRevL, _voiceData, len, coefL * coefRev * coefNonCho); // Left, reverb, no chorus
+                FastMaths::multiply(_dataChoL, _voiceData, len, coefL * coefNonRev * coefCho); // Left, no reverb, chorus
+                FastMaths::multiply(_dataChoRevL, _voiceData, len, coefL * coefRev * coefCho); // Left, reverb, chorus
+            }
+        }
+
+        // Right
+        if (coefR > 0.0f)
+        {
+            if (rightInitialized)
+            {
+                FastMaths::multiplyAdd(_dataR, _voiceData, len, coefR * coefNonRev * coefNonCho); // Right, no reverb, no chorus
+                FastMaths::multiplyAdd(_dataRevR, _voiceData, len, coefR * coefRev * coefNonCho); // Right, reverb, no chorus
+                FastMaths::multiplyAdd(_dataChoR, _voiceData, len, coefR * coefNonRev * coefCho); // Right, no reverb, chorus
+                FastMaths::multiplyAdd(_dataChoRevR, _voiceData, len, coefR * coefRev * coefCho); // Right, reverb, chorus
+            }
+            else
+            {
+                rightInitialized = true;
+                FastMaths::multiply(_dataR, _voiceData, len, coefR * coefNonRev * coefNonCho); // Right, no reverb, no chorus
+                FastMaths::multiply(_dataRevR, _voiceData, len, coefR * coefRev * coefNonCho); // Right, reverb, no chorus
+                FastMaths::multiply(_dataChoR, _voiceData, len, coefR * coefNonRev * coefCho); // Right, no reverb, chorus
+                FastMaths::multiply(_dataChoRevR, _voiceData, len, coefR * coefRev * coefCho); // Right, reverb, chorus
+            }
+        }
+    }
+}
+
+void SoundEngine::setData(float * dataL, float * dataR, float * dataChoL, float * dataChoR,
+                          float * dataRevL, float * dataRevR, float * dataChoRevL, float * dataChoRevR, quint32 len)
+{
+    memcpy(dataL, _dataL, len * sizeof(float));
+    memcpy(dataR, _dataR, len * sizeof(float));
+    memcpy(dataChoL, _dataChoL, len * sizeof(float));
+    memcpy(dataChoR, _dataChoR, len * sizeof(float));
+    memcpy(dataRevL, _dataRevL, len * sizeof(float));
+    memcpy(dataRevR, _dataRevR, len * sizeof(float));
+    memcpy(dataChoRevL, _dataChoRevL, len * sizeof(float));
+    memcpy(dataChoRevR, _dataChoRevR, len * sizeof(float));
+}
+
+void SoundEngine::addData(float * dataL, float * dataR, float * dataChoL, float * dataChoR,
+                          float * dataRevL, float * dataRevR, float * dataChoRevL, float * dataChoRevR, quint32 len)
+{
+    FastMaths::addVectors(dataL, _dataL, len);
+    FastMaths::addVectors(dataR, _dataR, len);
+    FastMaths::addVectors(dataChoL, _dataChoL, len);
+    FastMaths::addVectors(dataChoR, _dataChoR, len);
+    FastMaths::addVectors(dataRevL, _dataRevL, len);
+    FastMaths::addVectors(dataRevR, _dataRevR, len);
+    FastMaths::addVectors(dataChoRevL, _dataChoRevL, len);
+    FastMaths::addVectors(dataChoRevR, _dataChoRevR, len);
+}

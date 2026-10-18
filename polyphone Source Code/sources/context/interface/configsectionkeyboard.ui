@@ -1,0 +1,349 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ConfigSectionKeyboard</class>
+ <widget class="QWidget" name="ConfigSectionKeyboard">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>465</width>
+    <height>336</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string notr="true">Form</string>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="3" column="0">
+    <spacer name="horizontalSpacer">
+     <property name="orientation">
+      <enum>Qt::Orientation::Horizontal</enum>
+     </property>
+     <property name="sizeType">
+      <enum>QSizePolicy::Policy::Fixed</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>20</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item row="6" column="1">
+    <widget class="QLabel" name="label">
+     <property name="text">
+      <string>Reference pitch</string>
+     </property>
+    </widget>
+   </item>
+   <item row="7" column="2">
+    <widget class="QComboBox" name="comboTemperament">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="MinimumExpanding" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item row="6" column="4">
+    <widget class="QPushButton" name="pushDefaultReferencePitch">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="toolTip">
+      <string>Back to default value</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="1">
+    <widget class="QLabel" name="label_3">
+     <property name="text">
+      <string>First C</string>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="0" colspan="5">
+    <widget class="QLabel" name="labelSubTitle2">
+     <property name="font">
+      <font>
+       <bold>true</bold>
+      </font>
+     </property>
+     <property name="text">
+      <string>Mapping</string>
+     </property>
+    </widget>
+   </item>
+   <item row="7" column="4">
+    <widget class="QPushButton" name="pushDefaultTemperament">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="toolTip">
+      <string>Back to default value</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="2" colspan="3">
+    <widget class="QComboBox" name="comboFirstC">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <item>
+      <property name="text">
+       <string notr="true">0</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string notr="true">12</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string notr="true">24</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string notr="true">36</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string notr="true">48</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string notr="true">60</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string notr="true">72</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string notr="true">84</string>
+      </property>
+     </item>
+    </widget>
+   </item>
+   <item row="5" column="0" colspan="5">
+    <widget class="QLabel" name="labelSubTitle1">
+     <property name="font">
+      <font>
+       <bold>true</bold>
+      </font>
+     </property>
+     <property name="text">
+      <string>Tuning</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="1" colspan="4">
+    <widget class="QTableWidget" name="tableKeyboardMap">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="MinimumExpanding">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>140</height>
+      </size>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::Shape::StyledPanel</enum>
+     </property>
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarPolicy::ScrollBarAlwaysOn</enum>
+     </property>
+     <property name="showDropIndicator" stdset="0">
+      <bool>false</bool>
+     </property>
+     <property name="dragDropOverwriteMode">
+      <bool>false</bool>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::SelectionMode::NoSelection</enum>
+     </property>
+     <property name="horizontalScrollMode">
+      <enum>QAbstractItemView::ScrollMode::ScrollPerPixel</enum>
+     </property>
+     <property name="cornerButtonEnabled">
+      <bool>false</bool>
+     </property>
+     <attribute name="horizontalHeaderHighlightSections">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="verticalHeaderDefaultSectionSize">
+      <number>25</number>
+     </attribute>
+     <attribute name="verticalHeaderHighlightSections">
+      <bool>false</bool>
+     </attribute>
+     <attribute name="verticalHeaderStretchLastSection">
+      <bool>true</bool>
+     </attribute>
+     <row>
+      <property name="text">
+       <string>Octave #1</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>Octave #2</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>Octave #3</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>Octave #4</string>
+      </property>
+     </row>
+     <column>
+      <property name="text">
+       <string notr="true">Do</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Do#</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Re</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Re#</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Mi</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Fa</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Fa#</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Sol</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Sol#</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">La</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">La#</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Si</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string notr="true">Do</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item row="7" column="1">
+    <widget class="QLabel" name="label_2">
+     <property name="text">
+      <string>Temperament</string>
+     </property>
+    </widget>
+   </item>
+   <item row="7" column="3">
+    <widget class="QComboBox" name="comboTemperamentRelativeKey">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item row="6" column="2" colspan="2">
+    <widget class="QDoubleSpinBox" name="spinReferencePitch">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="MinimumExpanding" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="decimals">
+      <number>1</number>
+     </property>
+     <property name="minimum">
+      <double>390.000000000000000</double>
+     </property>
+     <property name="maximum">
+      <double>470.000000000000000</double>
+     </property>
+     <property name="singleStep">
+      <double>0.100000000000000</double>
+     </property>
+     <property name="value">
+      <double>440.000000000000000</double>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <tabstops>
+  <tabstop>tableKeyboardMap</tabstop>
+  <tabstop>comboFirstC</tabstop>
+  <tabstop>spinReferencePitch</tabstop>
+  <tabstop>pushDefaultReferencePitch</tabstop>
+  <tabstop>comboTemperament</tabstop>
+  <tabstop>comboTemperamentRelativeKey</tabstop>
+  <tabstop>pushDefaultTemperament</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>

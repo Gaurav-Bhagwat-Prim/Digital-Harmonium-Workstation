@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PagePrst</class>
+ <widget class="QWidget" name="PagePrst">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>622</width>
+    <height>428</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string notr="true"/>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="TableWidgetPrst" name="tablePrst">
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <property name="autoScrollMargin">
+      <number>16</number>
+     </property>
+     <property name="editTriggers">
+      <set>QAbstractItemView::AnyKeyPressed|QAbstractItemView::DoubleClicked|QAbstractItemView::SelectedClicked</set>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::ExtendedSelection</enum>
+     </property>
+     <property name="textElideMode">
+      <enum>Qt::ElideMiddle</enum>
+     </property>
+     <property name="horizontalScrollMode">
+      <enum>QAbstractItemView::ScrollPerPixel</enum>
+     </property>
+     <property name="cornerButtonEnabled">
+      <bool>false</bool>
+     </property>
+     <attribute name="verticalHeaderMinimumSectionSize">
+      <number>10</number>
+     </attribute>
+    </widget>
+   </item>
+   <item>
+    <widget class="ModulatorEditor" name="modulatorEditor" native="true"/>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>ModulatorEditor</class>
+   <extends>QWidget</extends>
+   <header>modulatoreditor.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>TableWidgetPrst</class>
+   <extends>QTableWidget</extends>
+   <header>pageprst.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>tablePrst</sender>
+   <signal>cellChanged(int,int)</signal>
+   <receiver>PagePrst</receiver>
+   <slot>set(int,int)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>159</x>
+     <y>119</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>159</x>
+     <y>119</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>tablePrst</sender>
+   <signal>itemSelectionChanged()</signal>
+   <receiver>PagePrst</receiver>
+   <slot>selected()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>159</x>
+     <y>119</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>159</x>
+     <y>119</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+ <slots>
+  <slot>set(int,int)</slot>
+  <slot>selected()</slot>
+  <slot>setAmount()</slot>
+  <slot>setAbs()</slot>
+  <slot>afficheEditMod()</slot>
+  <slot>setSourceAmountType(int,int)</slot>
+  <slot>setSourceType(int,int)</slot>
+  <slot>setDest(int)</slot>
+  <slot>setSource(int)</slot>
+  <slot>setSource2(int)</slot>
+  <slot>nouveauMod()</slot>
+  <slot>supprimerMod()</slot>
+  <slot>setBank()</slot>
+  <slot>setPreset()</slot>
+  <slot>copyMod()</slot>
+  <slot>pasteMod()</slot>
+ </slots>
+</ui>

@@ -1,0 +1,45 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build-windows-x64:
+    uses: ./.github/workflows/build-windows-x64.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+  build-linux-x64:
+    uses: ./.github/workflows/build-linux-x64.yml
+    with:
+      tag: ${{ github.ref_name }}
+
+  build-linux-aarch64:
+    uses: ./.github/workflows/build-linux-aarch64.yml
+    with:
+      tag: ${{ github.ref_name }}
+
+  build-macos-x64:
+    uses: ./.github/workflows/build-macos-x64.yml
+    with:
+      tag: ${{ github.ref_name }}
+
+  build-macos-aarch64:
+    uses: ./.github/workflows/build-macos-aarch64.yml
+    with:
+      tag: ${{ github.ref_name }}
+
+  create-release:
+    needs:
+      - build-windows-x64
+      - build-linux-x64
+      - build-linux-aarch64
+      - build-macos-x64
+      - build-macos-aarch64
+    uses: ./.github/workflows/create-release.yml
+    with:
+      tag: ${{ github.ref_name }}
