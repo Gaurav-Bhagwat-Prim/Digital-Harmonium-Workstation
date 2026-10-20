@@ -64,7 +64,10 @@ impl VhlDecompiler {
         let build_tag = String::from_utf8_lossy(&build_tag_raw).trim_matches('\0').to_string();
 
         // 3. Verify CRC-32
-        let mut verify_buf = data[0..total_file_size.min(data.len())].to_vec();
+        if total_file_size < 128 || total_file_size > data.len() {
+            return Err(format!("Corrupt VHL header: declared size {} but file has {} bytes", total_file_size, data.len()));
+        }
+        let mut verify_buf = data[0..total_file_size].to_vec();
         // Clear CRC-32 field at bytes 58..62
         verify_buf[58..62].copy_from_slice(&[0, 0, 0, 0]);
         let calculated_crc = Crc32::compute(&verify_buf);

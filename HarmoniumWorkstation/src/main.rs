@@ -1,7 +1,12 @@
 mod theme;
 mod app;
 pub mod vhl;
+pub mod vhr;
 pub mod audio_engine;
+pub mod visuals;
+mod widgets; 
+mod icons;
+pub mod project;
 
 use app::HarmoniumApp;
 

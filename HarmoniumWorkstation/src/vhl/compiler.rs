@@ -52,8 +52,8 @@ impl Default for VhlProject {
 
         for i in 0..VHL_TOTAL_PHYSICAL_KEYS {
             let note = (i as u8) + 36; // C2 is 36
-            // Default split: Key 0..24 = Zone 0 (Piano), Key 25..60 = Zone 1 (Harmonium)
-            let (zone, inst) = if i <= 24 { (0, 1) } else { (1, 0) };
+            // Default split: Key 0..24 = Zone 0 (instrument 0 = Piano), Key 25..60 = Zone 1 (instrument 1 = Harmonium)
+            let (zone, inst) = if i <= 24 { (0, 0) } else { (1, 1) };
             // Resample pitch ratio relative to D4 (MIDI 62)
             let semitone_diff = (note as f32) - 62.0;
             let ratio = 2.0_f32.powf(semitone_diff / 12.0);
