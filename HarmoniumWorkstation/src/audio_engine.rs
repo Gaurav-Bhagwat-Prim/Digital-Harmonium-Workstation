@@ -16,6 +16,7 @@
 //!  * The same `Synth` renders live audio and the offline "Export WAV".
 
 use crate::vhl::compiler::{VhlProject, VhlSample};
+use crate::vhl::types::*;
 use crate::vhr::types::*;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -283,6 +284,235 @@ impl StereoChorus {
     }
 }
 
+// ───────────────────────────── SoundFont 2 Modulator Curves & Real-Time Evaluator ─────────────────────────────
+
+pub struct ModCurves;
+
+impl ModCurves {
+    /// Calculate base transfer curve for input index v in [0..127]
+    /// 0 = Linear, 1 = Concave, 2 = Convex, 3 = Switch
+    #[inline(always)]
+    pub fn eval_base(v: u8, curve_type: u8) -> f32 {
+        let v_clamp = v.min(127) as f32;
+        match curve_type {
+            SF_CURVE_LINEAR => v_clamp / 127.0,
+            SF_CURVE_CONCAVE => {
+                if v == 0 {
+                    0.0
+                } else if v >= 127 {
+                    1.0
+                } else {
+                    let db = -20.0 * (v_clamp / 127.0).log10();
+                    (1.0 - (db / 96.0)).clamp(0.0, 1.0)
+                }
+            }
+            SF_CURVE_CONVEX => {
+                if v == 0 {
+                    0.0
+                } else if v >= 127 {
+                    1.0
+                } else {
+                    let db = -20.0 * ((127.0 - v_clamp) / 127.0).log10();
+                    (db / 96.0).clamp(0.0, 1.0)
+                }
+            }
+            SF_CURVE_SWITCH => {
+                if v >= 64 { 1.0 } else { 0.0 }
+            }
+            _ => v_clamp / 127.0,
+        }
+    }
+
+    /// Evaluates source value with Direction and Polarity
+    #[inline(always)]
+    pub fn eval_source(v: u8, curve_type: u8, descending: bool, bipolar: bool) -> f32 {
+        let base = Self::eval_base(v, curve_type);
+        let dir = if descending { 1.0 - base } else { base };
+        if bipolar {
+            2.0 * dir - 1.0
+        } else {
+            dir
+        }
+    }
+
+    /// Continuous version for envelopes and LFOs where input is already normalized 0.0 .. 1.0
+    #[inline(always)]
+    pub fn eval_continuous(val_01: f32, curve_type: u8, descending: bool, bipolar: bool) -> f32 {
+        let v = (val_01.clamp(0.0, 1.0) * 127.0).round() as u8;
+        Self::eval_source(v, curve_type, descending, bipolar)
+    }
+
+    /// Evaluates piecewise 5-node custom curve
+    #[inline(always)]
+    pub fn eval_custom(x: f32, points: &[f32; 5]) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        let scaled = x * 4.0;
+        let seg = (scaled.floor() as usize).min(3);
+        let t = scaled - seg as f32;
+        let y0 = points[seg];
+        let y1 = points[seg + 1];
+        (y0 + t * (y1 - y0)).clamp(0.0, 1.0)
+    }
+
+    #[inline(always)]
+    pub fn eval_base_custom(v: u8, curve_type: u8, custom: &[f32; 5]) -> f32 {
+        if curve_type == SF_CURVE_CUSTOM {
+            Self::eval_custom(v.min(127) as f32 / 127.0, custom)
+        } else {
+            Self::eval_base(v, curve_type)
+        }
+    }
+
+    #[inline(always)]
+    pub fn eval_source_custom(v: u8, curve_type: u8, descending: bool, bipolar: bool, custom: &[f32; 5]) -> f32 {
+        let base = Self::eval_base_custom(v, curve_type, custom);
+        let dir = if descending { 1.0 - base } else { base };
+        if bipolar {
+            2.0 * dir - 1.0
+        } else {
+            dir
+        }
+    }
+
+    #[inline(always)]
+    pub fn eval_continuous_custom(val_01: f32, curve_type: u8, descending: bool, bipolar: bool, custom: &[f32; 5]) -> f32 {
+        let x = val_01.clamp(0.0, 1.0);
+        let base = if curve_type == SF_CURVE_CUSTOM {
+            Self::eval_custom(x, custom)
+        } else {
+            let v = (x * 127.0).round() as u8;
+            Self::eval_base(v, curve_type)
+        };
+        let dir = if descending { 1.0 - base } else { base };
+        if bipolar {
+            2.0 * dir - 1.0
+        } else {
+            dir
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ModDeltas {
+    pub atten_db: f32,        // initialAttenuation (centibels / 10)
+    pub filter_fc_cents: f32, // initialFilterFc
+    pub filter_q_cb: f32,     // initialFilterQ
+    pub pitch_cents: f32,     // fineTune / modEnvToPitch / vibLfoToPitch
+    pub pan_offset: f32,      // pan [-1..+1]
+    pub reverb_send: f32,     // reverbEffectsSend [0..1]
+    pub chorus_send: f32,     // chorusEffectsSend [0..1]
+    pub tremolo_db: f32,      // modLfoToVolume
+}
+
+impl ModDeltas {
+    pub fn compute(
+        mods: &[VHLModulator_v2],
+        custom_curves: &[[f32; 5]],
+        key: u8,
+        vel: u8,
+        mod_env: f32,
+        mod_lfo: f32,
+        vib_lfo: f32,
+        cc: &[u8; 128],
+        pitch_wheel: i16,
+        channel_pressure: u8,
+    ) -> Self {
+        let mut deltas = Self::default();
+
+        for (m_idx, m) in mods.iter().enumerate() {
+            if m.flags & 1 == 0 {
+                continue;
+            }
+
+            let custom = custom_curves.get(m_idx).unwrap_or(&[0.0, 0.25, 0.5, 0.75, 1.0]);
+            let (ctrl1, is_cc1, curve1, desc1, bipol1) = VHLModulator_v2::unpack_source(m.src_oper);
+            let s1 = if is_cc1 {
+                let v = cc[ctrl1 as usize & 0x7F];
+                ModCurves::eval_source_custom(v, curve1, desc1, bipol1, custom)
+            } else {
+                match ctrl1 as u16 {
+                    SF_MOD_SRC_NONE => {
+                        if desc1 { 0.0 } else { 1.0 }
+                    }
+                    SF_MOD_SRC_VELOCITY => ModCurves::eval_source_custom(vel, curve1, desc1, bipol1, custom),
+                    SF_MOD_SRC_KEY => ModCurves::eval_source_custom(key, curve1, desc1, bipol1, custom),
+                    SF_MOD_SRC_CHANNEL_PRESSURE => ModCurves::eval_source_custom(channel_pressure, curve1, desc1, bipol1, custom),
+                    SF_MOD_SRC_POLY_PRESSURE => ModCurves::eval_source_custom(channel_pressure, curve1, desc1, bipol1, custom),
+                    SF_MOD_SRC_PITCH_WHEEL => {
+                        let norm = (((pitch_wheel as f32 + 8192.0) / 16383.0) * 127.0).clamp(0.0, 127.0) as u8;
+                        ModCurves::eval_source_custom(norm, curve1, desc1, bipol1, custom)
+                    }
+                    SF_MOD_SRC_MOD_ENV => ModCurves::eval_continuous_custom(mod_env, curve1, desc1, bipol1, custom),
+                    SF_MOD_SRC_MOD_LFO => {
+                        let norm = (mod_lfo * 0.5 + 0.5).clamp(0.0, 1.0);
+                        ModCurves::eval_continuous_custom(norm, curve1, desc1, bipol1, custom)
+                    }
+                    SF_MOD_SRC_VIB_LFO => {
+                        let norm = (vib_lfo * 0.5 + 0.5).clamp(0.0, 1.0);
+                        ModCurves::eval_continuous_custom(norm, curve1, desc1, bipol1, custom)
+                    }
+                    _ => 0.0,
+                }
+            };
+
+            let s2 = if m.amt_src_oper == 0 {
+                1.0
+            } else {
+                let (ctrl2, is_cc2, curve2, desc2, bipol2) = VHLModulator_v2::unpack_source(m.amt_src_oper);
+                if is_cc2 {
+                    let v = cc[ctrl2 as usize & 0x7F];
+                    ModCurves::eval_source(v, curve2, desc2, bipol2)
+                } else {
+                    match ctrl2 as u16 {
+                        SF_MOD_SRC_VELOCITY => ModCurves::eval_source(vel, curve2, desc2, bipol2),
+                        SF_MOD_SRC_KEY => ModCurves::eval_source(key, curve2, desc2, bipol2),
+                        SF_MOD_SRC_PITCH_WHEEL_SENS => 1.0,
+                        _ => 1.0,
+                    }
+                }
+            };
+
+            let mut out = s1 * s2 * (m.amount as f32);
+            if m.transform == SF_TRANSFORM_ABSOLUTE {
+                out = out.abs();
+            }
+
+            match m.dest_oper {
+                SF_GEN_INITIAL_ATTENUATION => {
+                    deltas.atten_db += out / 10.0;
+                }
+                SF_GEN_INITIAL_FILTER_FC | SF_GEN_MOD_ENV_TO_FILTER_FC | SF_GEN_MOD_LFO_TO_FILTER_FC => {
+                    deltas.filter_fc_cents += out;
+                }
+                SF_GEN_INITIAL_FILTER_Q => {
+                    deltas.filter_q_cb += out;
+                }
+                SF_GEN_FINE_TUNE | SF_GEN_VIB_LFO_TO_PITCH | SF_GEN_MOD_LFO_TO_PITCH | SF_GEN_MOD_ENV_TO_PITCH => {
+                    deltas.pitch_cents += out;
+                }
+                SF_GEN_COARSE_TUNE => {
+                    deltas.pitch_cents += out * 100.0;
+                }
+                SF_GEN_PAN => {
+                    deltas.pan_offset += out / 500.0;
+                }
+                SF_GEN_REVERB_EFFECTS_SEND => {
+                    deltas.reverb_send += out / 1000.0;
+                }
+                SF_GEN_CHORUS_EFFECTS_SEND => {
+                    deltas.chorus_send += out / 1000.0;
+                }
+                SF_GEN_MOD_LFO_TO_VOLUME => {
+                    deltas.tremolo_db += out / 10.0;
+                }
+                _ => {}
+            }
+        }
+
+        deltas
+    }
+}
+
 // ───────────────────────────── patch (immutable snapshot) ─────────────────────────────
 
 #[derive(Clone)]
@@ -352,6 +582,8 @@ pub struct RegionParams {
 pub struct Patch {
     pub samples: Vec<SampleInfo>,
     pub regions: Vec<RegionParams>,
+    pub modulators: Vec<VHLModulator_v2>,
+    pub custom_curves: Vec<[f32; 5]>,
 }
 
 /// Mono float copy of a sample (stereo is averaged). Done once per sample, off the audio thread.
@@ -440,7 +672,12 @@ impl Patch {
                 res_db: r.filter.resonance_cb as f32 / 10.0,
             })
             .collect();
-        Patch { samples, regions }
+        Patch {
+            samples,
+            regions,
+            modulators: project.modulators.clone(),
+            custom_curves: Vec::new(),
+        }
     }
 }
 
@@ -530,6 +767,7 @@ impl EnvState {
 struct Voice {
     key: u8,
     midi: u8,
+    vel: u8,
     region: usize,
     sample: usize,
     pcm: Arc<Vec<f32>>, // keeps the sample alive even if the patch no longer has it
@@ -559,6 +797,9 @@ pub struct Synth {
     reverb: Freeverb,
     chorus: StereoChorus,
     chorus_rev: StereoChorus,
+    pub midi_controllers: [u8; 128],
+    pub pitch_bend: i16,
+    pub channel_pressure: u8,
     dry_l: Vec<f32>,
     dry_r: Vec<f32>,
     rev_l: Vec<f32>,
@@ -571,6 +812,12 @@ pub struct Synth {
 
 impl Synth {
     pub fn new(sample_rate: f32) -> Self {
+        let mut midi_controllers = [0u8; 128];
+        midi_controllers[7] = 100; // CC7 Volume
+        midi_controllers[10] = 64; // CC10 Pan Center
+        midi_controllers[11] = 127; // CC11 Expression Full
+        midi_controllers[91] = 40; // CC91 Reverb Send
+
         Self {
             sr: sample_rate,
             voices: Vec::with_capacity(MAX_VOICES + 8),
@@ -578,6 +825,9 @@ impl Synth {
             reverb: Freeverb::new(sample_rate),
             chorus: StereoChorus::new(sample_rate),
             chorus_rev: StereoChorus::new(sample_rate),
+            midi_controllers,
+            pitch_bend: 0,
+            channel_pressure: 0,
             dry_l: vec![0.0; 4096],
             dry_r: vec![0.0; 4096],
             rev_l: vec![0.0; 4096],
@@ -587,6 +837,18 @@ impl Synth {
             cho_rev_l: vec![0.0; 4096],
             cho_rev_r: vec![0.0; 4096],
         }
+    }
+
+    pub fn control_change(&mut self, cc: u8, val: u8) {
+        self.midi_controllers[cc as usize & 0x7F] = val;
+    }
+
+    pub fn pitch_bend(&mut self, val: i16) {
+        self.pitch_bend = val;
+    }
+
+    pub fn channel_pressure(&mut self, val: u8) {
+        self.channel_pressure = val;
     }
 
     pub fn active_voices(&self) -> usize {
@@ -609,16 +871,29 @@ impl Synth {
                 continue;
             }
             self.age += 1;
+            let has_vel_atten_mod = patch.modulators.iter().any(|m| {
+                m.flags & 1 != 0 &&
+                m.dest_oper == SF_GEN_INITIAL_ATTENUATION &&
+                (m.src_oper & 0x7F) == (SF_MOD_SRC_VELOCITY as u16) &&
+                (m.src_oper & 0x80) == 0
+            });
+            let vel_gain = if has_vel_atten_mod {
+                1.0
+            } else {
+                (vel as f32 / 127.0).clamp(0.1, 1.0)
+            };
+
             self.voices.push(Voice {
                 key,
                 midi,
+                vel,
                 region: ri,
                 sample: r.sample,
                 pcm: info.pcm.clone(),
                 params: *r,
                 info: info.clone(),
                 pos: 0.0,
-                vel_gain: (vel as f32 / 127.0).clamp(0.1, 1.0),
+                vel_gain,
                 vol_env: EnvState::new(),
                 mod_env: EnvState::new(),
                 mod_lfo_phase: 0.0,
@@ -701,8 +976,12 @@ impl Synth {
         let cho_rev_l = &mut self.cho_rev_l[..n];
         let cho_rev_r = &mut self.cho_rev_r[..n];
 
+        let cc = self.midi_controllers;
+        let pb = self.pitch_bend;
+        let cp = self.channel_pressure;
+
         self.voices.retain_mut(|v| {
-            v.render(patch, sr, dry_l, dry_r, rev_l, rev_r, cho_l, cho_r, cho_rev_l, cho_rev_r)
+            v.render(patch, sr, &cc, pb, cp, dry_l, dry_r, rev_l, rev_r, cho_l, cho_r, cho_rev_l, cho_rev_r)
         });
 
         // 1. Process chorus on cho_rev buffer and sum into reverb buffer
@@ -748,6 +1027,9 @@ impl Voice {
         &mut self,
         patch: &Patch,
         sr: f32,
+        cc: &[u8; 128],
+        pitch_wheel: i16,
+        channel_pressure: u8,
         dry_l: &mut [f32],
         dry_r: &mut [f32],
         rev_l: &mut [f32],
@@ -802,27 +1084,24 @@ impl Voice {
 
         let gain = p.gain * self.vel_gain;
 
-        // Equal-power panning (Polyphone SoundFont 2 law)
-        let pan_clamped = p.pan.clamp(-1.0, 1.0);
-        let pan_angle = (pan_clamped + 1.0) * std::f32::consts::FRAC_PI_4; // 0 at -1, PI/4 at 0, PI/2 at +1
-        let (pan_r, pan_l) = pan_angle.sin_cos();
+        // Initial modulator evaluation
+        let mut deltas = ModDeltas::compute(
+            &patch.modulators,
+            &patch.custom_curves,
+            self.key,
+            self.vel,
+            self.mod_env.level,
+            0.0,
+            0.0,
+            cc,
+            pitch_wheel,
+            channel_pressure,
+        );
 
-        // Send coefficients (Polyphone soundengine.cpp)
-        let coef_rev = p.reverb_send.clamp(0.0, 1.0);
-        let coef_non_rev = 1.0 - coef_rev;
-        let coef_cho = p.chorus_send.clamp(0.0, 1.0);
-        let coef_non_cho = 1.0 - coef_cho;
-
-        let dry_coef_l = pan_l * coef_non_rev * coef_non_cho;
-        let dry_coef_r = pan_r * coef_non_rev * coef_non_cho;
-        let cho_coef_l = pan_l * coef_non_rev * coef_cho;
-        let cho_coef_r = pan_r * coef_non_rev * coef_cho;
-        let rev_coef_l = pan_l * coef_rev * coef_non_cho;
-        let rev_coef_r = pan_r * coef_rev * coef_non_cho;
-        let cho_rev_coef_l = pan_l * coef_rev * coef_cho;
-        let cho_rev_coef_r = pan_r * coef_rev * coef_cho;
-
-        let (mut b0, mut b1, mut b2, mut a1, mut a2) = biquad_lowpass(p.cutoff_hz, lowpass_q(p.res_db), sr);
+        let init_delta_filter = p.mod_env_to_filter * self.mod_env.level + deltas.filter_fc_cents;
+        let init_eff_fc = (p.cutoff_hz * 2.0_f32.powf(init_delta_filter / 1200.0)).clamp(20.0, sr * 0.45);
+        let init_eff_q = lowpass_q((p.res_db + deltas.filter_q_cb / 10.0).clamp(0.0, 24.0));
+        let (mut b0, mut b1, mut b2, mut a1, mut a2) = biquad_lowpass(init_eff_fc, init_eff_q, sr);
 
         let loop_end = self.info.loop_end.min(len as f32) as f64;
         let loop_start = (self.info.loop_start as f64).min(loop_end);
@@ -870,27 +1149,71 @@ impl Voice {
                 0.0
             };
 
-            // 3. Modulations
-            // Pitch modulation
-            let delta_pitch = p.mod_env_to_pitch * mod_level
-                + p.lfo_mod.to_pitch * mod_lfo_val
-                + p.lfo_vib.to_pitch * vib_lfo_val;
-            let step = 2.0_f64.powf((base_cents + delta_pitch) as f64 / 1200.0) * (self.info.rate as f64 / sr as f64);
-
-            // Filter modulation (update biquad coeffs every 8 samples or initially)
+            // 3. Modulations (update every 8 samples)
             if (i & 7) == 0 {
-                let delta_filter = p.mod_env_to_filter * mod_level + p.lfo_mod.to_filter * mod_lfo_val;
+                deltas = ModDeltas::compute(
+                    &patch.modulators,
+                    &patch.custom_curves,
+                    self.key,
+                    self.vel,
+                    mod_level,
+                    mod_lfo_val,
+                    vib_lfo_val,
+                    cc,
+                    pitch_wheel,
+                    channel_pressure,
+                );
+
+                let delta_filter = p.mod_env_to_filter * mod_level + p.lfo_mod.to_filter * mod_lfo_val + deltas.filter_fc_cents;
                 let eff_fc = (p.cutoff_hz * 2.0_f32.powf(delta_filter / 1200.0)).clamp(20.0, sr * 0.45);
-                let (nb0, nb1, nb2, na1, na2) = biquad_lowpass(eff_fc, lowpass_q(p.res_db), sr);
+                let eff_q = lowpass_q((p.res_db + deltas.filter_q_cb / 10.0).clamp(0.0, 24.0));
+                let (nb0, nb1, nb2, na1, na2) = biquad_lowpass(eff_fc, eff_q, sr);
                 b0 = nb0; b1 = nb1; b2 = nb2; a1 = na1; a2 = na2;
             }
 
-            // Volume modulation
-            let vol_mod = if p.lfo_mod.to_volume_db.abs() > 0.001 {
-                10.0_f32.powf((p.lfo_mod.to_volume_db * mod_lfo_val) / 20.0)
+            // Pitch modulation
+            let delta_pitch = p.mod_env_to_pitch * mod_level
+                + p.lfo_mod.to_pitch * mod_lfo_val
+                + p.lfo_vib.to_pitch * vib_lfo_val
+                + deltas.pitch_cents;
+            let step = 2.0_f64.powf((base_cents + delta_pitch) as f64 / 1200.0) * (self.info.rate as f64 / sr as f64);
+
+            // Volume modulation & dynamic attenuation from modulators (safely clamped to avoid mute / NaN)
+            let eff_atten_db = deltas.atten_db.clamp(-96.0, 96.0);
+            let atten_linear = if eff_atten_db.abs() > 0.001 {
+                10.0_f32.powf(-eff_atten_db / 20.0)
             } else {
                 1.0
             };
+            let eff_gain = gain * atten_linear;
+
+            let tremolo_total = (p.lfo_mod.to_volume_db * mod_lfo_val) + deltas.tremolo_db;
+            let eff_tremolo_db = tremolo_total.clamp(-48.0, 48.0);
+            let vol_mod = if eff_tremolo_db.abs() > 0.001 {
+                10.0_f32.powf(-eff_tremolo_db / 20.0)
+            } else {
+                1.0
+            };
+
+            // Dynamic Send & Panning modulation
+            let eff_rev = (p.reverb_send + deltas.reverb_send).clamp(0.0, 1.0);
+            let eff_cho = (p.chorus_send + deltas.chorus_send).clamp(0.0, 1.0);
+            let eff_pan = (p.pan + deltas.pan_offset).clamp(-1.0, 1.0);
+
+            let pan_angle = (eff_pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            let (pan_r, pan_l) = pan_angle.sin_cos();
+
+            let non_rev = 1.0 - eff_rev;
+            let non_cho = 1.0 - eff_cho;
+
+            let cur_dry_l = pan_l * non_rev * non_cho;
+            let cur_dry_r = pan_r * non_rev * non_cho;
+            let cur_cho_l = pan_l * non_rev * eff_cho;
+            let cur_cho_r = pan_r * non_rev * eff_cho;
+            let cur_rev_l = pan_l * eff_rev * non_cho;
+            let cur_rev_r = pan_r * eff_rev * non_cho;
+            let cur_cho_rev_l = pan_l * eff_rev * eff_cho;
+            let cur_cho_rev_r = pan_r * eff_rev * eff_cho;
 
             // 4. Sample fetch (linear interpolation, wraps inside the loop)
             let idx = self.pos as usize;
@@ -910,17 +1233,17 @@ impl Voice {
             self.y2 = self.y1;
             self.y1 = if y0.abs() < 1e-18 { 0.0 } else { y0 };
 
-            let o = y0 * vol_level * gain * vol_mod;
+            let o = y0 * vol_level * eff_gain * vol_mod;
 
             // 6. Route to dry, chorus, and reverb buffers
-            dry_l[i] += o * dry_coef_l;
-            dry_r[i] += o * dry_coef_r;
-            cho_l[i] += o * cho_coef_l;
-            cho_r[i] += o * cho_coef_r;
-            rev_l[i] += o * rev_coef_l;
-            rev_r[i] += o * rev_coef_r;
-            cho_rev_l[i] += o * cho_rev_coef_l;
-            cho_rev_r[i] += o * cho_rev_coef_r;
+            dry_l[i] += o * cur_dry_l;
+            dry_r[i] += o * cur_dry_r;
+            cho_l[i] += o * cur_cho_l;
+            cho_r[i] += o * cur_cho_r;
+            rev_l[i] += o * cur_rev_l;
+            rev_r[i] += o * cur_rev_r;
+            cho_rev_l[i] += o * cur_cho_rev_l;
+            cho_rev_r[i] += o * cur_cho_rev_r;
 
             self.pos += step;
             if loops && self.pos >= loop_end {
@@ -939,6 +1262,9 @@ enum Cmd {
     NoteOn { key: u8, midi: u8, vel: u8 },
     NoteOff { key: u8 },
     AllOff,
+    ControlChange { cc: u8, val: u8 },
+    PitchBend { val: i16 },
+    ChannelPressure { val: u8 },
     SetPatch(Arc<Patch>),
 }
 
@@ -1040,6 +1366,9 @@ impl AudioPlayer {
                             Cmd::NoteOn { key, midi, vel } => synth.note_on(&patch, key, midi, vel),
                             Cmd::NoteOff { key } => synth.note_off(key),
                             Cmd::AllOff => synth.all_notes_off(),
+                            Cmd::ControlChange { cc, val } => synth.control_change(cc, val),
+                            Cmd::PitchBend { val } => synth.pitch_bend(val),
+                            Cmd::ChannelPressure { val } => synth.channel_pressure(val),
                             Cmd::SetPatch(p) => patch = p,
                         }
                     }
@@ -1098,6 +1427,18 @@ impl AudioPlayer {
 
     pub fn all_notes_off(&self) {
         self.send(Cmd::AllOff);
+    }
+
+    pub fn control_change(&self, cc: u8, val: u8) {
+        self.send(Cmd::ControlChange { cc, val });
+    }
+
+    pub fn pitch_bend(&self, val: i16) {
+        self.send(Cmd::PitchBend { val });
+    }
+
+    pub fn channel_pressure(&self, val: u8) {
+        self.send(Cmd::ChannelPressure { val });
     }
 
     /// Replace the whole sound set (samples + regions). Cheap: the GUI builds the Patch, the audio thread just swaps it in.
@@ -1248,7 +1589,7 @@ mod tests {
             cutoff_hz: 8000.0,
             res_db: 0.0,
         };
-        Patch { samples: vec![info], regions: vec![reg] }
+        Patch { samples: vec![info], regions: vec![reg], modulators: Vec::new(), custom_curves: Vec::new() }
     }
 
     #[test]
@@ -1354,5 +1695,72 @@ mod tests {
         }
         let tail_energy: f32 = l.iter().map(|v| v * v).sum::<f32>() + r.iter().map(|v| v * v).sum::<f32>();
         assert!(tail_energy > 1e-5, "Reverb tail should continue ringing");
+    }
+
+    #[test]
+    fn test_velocity_to_attenuation_modulator() {
+        let mut p = sine_patch(441);
+        // Add SF2 default: Velocity -> Attenuation (Concave, Descending, 960 cb = 96 dB)
+        p.modulators.push(VHLModulator_v2 {
+            src_oper: VHLModulator_v2::pack_source(SF_MOD_SRC_VELOCITY as u8, false, SF_CURVE_CONCAVE, true, false),
+            dest_oper: SF_GEN_INITIAL_ATTENUATION,
+            amt_src_oper: 0,
+            amount: 960,
+            transform: SF_TRANSFORM_LINEAR,
+            flags: 1,
+            index: 1,
+        });
+
+        // 1. Strike hard (velocity 127)
+        let mut synth1 = Synth::new(44100.0);
+        let (mut l1, mut r1) = (vec![0.0; 512], vec![0.0; 512]);
+        synth1.note_on(&p, 12, 48, 127);
+        synth1.render(&p, &mut l1, &mut r1);
+        let max_127 = l1.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
+
+        // 2. Strike soft (velocity 30)
+        let mut synth2 = Synth::new(44100.0);
+        let (mut l2, mut r2) = (vec![0.0; 512], vec![0.0; 512]);
+        synth2.note_on(&p, 12, 48, 30);
+        synth2.render(&p, &mut l2, &mut r2);
+        let max_30 = l2.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
+
+        assert!(max_127 > 0.5, "Velocity 127 should be loud, got {}", max_127);
+        assert!(max_30 < max_127 * 0.35, "Velocity 30 should be substantially quieter than 127 (got {} vs {})", max_30, max_127);
+    }
+
+    #[test]
+    fn test_mod_env_to_reverb_modulator() {
+        let mut p = sine_patch(441);
+        p.regions[0].reverb_send = 0.0; // Start completely dry
+        p.regions[0].mod_env.attack_ms = 40.0; // Mod env attacks over ~40ms
+        p.regions[0].mod_env.sustain = 1.0;
+
+        // Add Mod Env -> Reverb Send modulator (amount = 800 = 80%)
+        p.modulators.push(VHLModulator_v2 {
+            src_oper: VHLModulator_v2::pack_source(SF_MOD_SRC_MOD_ENV as u8, false, SF_CURVE_LINEAR, false, false),
+            dest_oper: SF_GEN_REVERB_EFFECTS_SEND,
+            amt_src_oper: 0,
+            amount: 800,
+            transform: SF_TRANSFORM_LINEAR,
+            flags: 1,
+            index: 1,
+        });
+
+        let mut synth = Synth::new(44100.0);
+        let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
+        synth.note_on(&p, 12, 48, 100);
+
+        // First 256 samples: envelope just starting, reverb send is nearly zero
+        synth.render(&p, &mut l, &mut r);
+        let early_rev_energy: f32 = synth.rev_l[..256].iter().map(|v| v * v).sum();
+
+        // Render 10 blocks (~60 ms): envelope reaches 1.0 and opens up 80% reverb!
+        for _ in 0..10 {
+            synth.render(&p, &mut l, &mut r);
+        }
+        let late_rev_energy: f32 = synth.rev_l[..256].iter().map(|v| v * v).sum();
+
+        assert!(late_rev_energy > early_rev_energy * 3.0, "Reverb energy must grow as modulation envelope attacks over time");
     }
 }

@@ -32,7 +32,9 @@ pub struct VhlProject {
     pub tuning_table: Option<VHLTuningTable_v2>,
     pub instruments: Vec<VHLInstrumentEntry_v2>,
     pub regions: Vec<VHLRegion_v2>,
+    pub region_names: Vec<String>,
     pub samples: Vec<VhlSample>,
+    pub modulators: Vec<VHLModulator_v2>,
 }
 
 impl Default for VhlProject {
@@ -79,7 +81,9 @@ impl Default for VhlProject {
             tuning_table: None,
             instruments: Vec::new(),
             regions: Vec::new(),
+            region_names: Vec::new(),
             samples: Vec::new(),
+            modulators: VHLModulator_v2::default_modulators(),
         }
     }
 }
@@ -282,9 +286,24 @@ impl VhlCompiler {
             Self::pad_4byte(&mut buffer);
         }
 
+        // 9. Section 8: SoundFont 2 Compatible Modulator Table
+        let offset_modulators = buffer.len() as u32;
+        for m in &project.modulators {
+            let mut cur = Cursor::new(Vec::new());
+            cur.write_u16::<LittleEndian>(m.src_oper).unwrap();
+            cur.write_u16::<LittleEndian>(m.dest_oper).unwrap();
+            cur.write_u16::<LittleEndian>(m.amt_src_oper).unwrap();
+            cur.write_i16::<LittleEndian>(m.amount).unwrap();
+            cur.write_u8(m.transform).unwrap();
+            cur.write_u8(m.flags).unwrap();
+            cur.write_u16::<LittleEndian>(m.index).unwrap();
+            buffer.extend_from_slice(&cur.into_inner());
+        }
+        Self::pad_4byte(&mut buffer);
+
         let total_file_size = buffer.len() as u32;
 
-        // 9. Bake Master File Header (Section 0)
+        // 10. Bake Master File Header (Section 0)
         let mut flags = VHL_FILE_FLAG_HAS_KEYBED_MAP | VHL_FILE_FLAG_HAS_LOOKUP_TABLE;
         if has_tuning {
             flags |= VHL_FILE_FLAG_HAS_TUNING_TABLE;
@@ -316,7 +335,7 @@ impl VhlCompiler {
         header_cur.write_u32::<LittleEndian>(offset_samples).unwrap();
         header_cur.write_u32::<LittleEndian>(offset_lookup).unwrap();
         header_cur.write_u32::<LittleEndian>(offset_pcm).unwrap();
-        header_cur.write_u32::<LittleEndian>(0).unwrap(); // reserved offset
+        header_cur.write_u32::<LittleEndian>(offset_modulators).unwrap(); // offset_modulator_table
 
         header_cur.write_u32::<LittleEndian>(total_file_size).unwrap();
         header_cur.write_u32::<LittleEndian>(0).unwrap(); // CRC32 = 0 during computation
@@ -326,9 +345,10 @@ impl VhlCompiler {
         header_cur.write_u16::<LittleEndian>(0).unwrap();
 
         header_cur.write_all(&build_tag).unwrap();
-        header_cur.write_all(&[0u8; 26]).unwrap(); // reserved
+        header_cur.write_u16::<LittleEndian>(project.modulators.len() as u16).unwrap(); // total_modulator_count
+        header_cur.write_all(&[0u8; 24]).unwrap(); // reserved future
 
-        // 10. Compute CRC-32 across complete buffer
+        // 11. Compute CRC-32 across complete buffer
         let crc = Crc32::compute(&buffer);
 
         // Write CRC-32 at byte offset 58

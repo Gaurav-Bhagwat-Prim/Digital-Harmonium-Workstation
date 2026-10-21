@@ -216,5 +216,11 @@ mod tests {
 
         // Verify PCM Waveform roundtrip (exact match)
         assert_eq!(decompiled.samples[0].pcm_frames, frames);
+
+        // Verify Modulator roundtrip (exact match)
+        assert_eq!(decompiled.modulators.len(), project.modulators.len());
+        for i in 0..project.modulators.len() {
+            assert_eq!(decompiled.modulators[i], project.modulators[i]);
+        }
     }
 }

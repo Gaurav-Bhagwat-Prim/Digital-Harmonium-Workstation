@@ -81,6 +81,15 @@ impl HarmoniumProject {
             buf.write_all(nb).map_err(|e| e.to_string())?;
         }
 
+        // 3c. Region names
+        buf.write_u16::<LittleEndian>(self.vhl.region_names.len() as u16).map_err(|e| e.to_string())?;
+        for rname in &self.vhl.region_names {
+            let nb = rname.as_bytes();
+            let nb = &nb[..nb.len().min(255)];
+            buf.write_u16::<LittleEndian>(nb.len() as u16).map_err(|e| e.to_string())?;
+            buf.write_all(nb).map_err(|e| e.to_string())?;
+        }
+
         // 4. Compute CRC-32 of entire payload
         let crc = Crc32::compute(&buf);
         buf.write_u32::<LittleEndian>(crc).map_err(|e| e.to_string())?;
@@ -152,6 +161,22 @@ impl HarmoniumProject {
                         smp.name = String::from_utf8_lossy(&nb).to_string();
                     }
                 }
+            }
+        }
+
+        // 3c. Optional region-name block
+        if (r.position() as usize) + 2 <= payload_len {
+            if let Ok(count) = r.read_u16::<LittleEndian>() {
+                let mut rnames = Vec::new();
+                for _ in 0..count as usize {
+                    let Ok(len) = r.read_u16::<LittleEndian>() else { break };
+                    let mut nb = vec![0u8; len as usize];
+                    if r.read_exact(&mut nb).is_err() {
+                        break;
+                    }
+                    rnames.push(String::from_utf8_lossy(&nb).to_string());
+                }
+                vhl.region_names = rnames;
             }
         }
 

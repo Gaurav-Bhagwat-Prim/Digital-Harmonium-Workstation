@@ -19,7 +19,20 @@ use egui::{Align, Align2, Color32, CursorIcon, FontId, Frame, Layout, Margin, Po
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppView {
+    Landing,
+    SoundEditor,
+    ModulationEditor,
+    #[allow(dead_code)]
+    LivePlayer,
+}
+
 pub struct HarmoniumApp {
+    // Active View Mode
+    pub current_view: AppView,
+    pub modulator_view: crate::modulator_editor::ModulatorEditorView,
+
     // Active VHL project & session
     pub project_name: String,
     pub project_path: Option<std::path::PathBuf>,
@@ -174,6 +187,7 @@ fn default_project() -> VhlProject {
     // would only produce a few-millisecond click.
     project.regions.push(make_region(0, 24, VHL_LOOP_CONTINUOUS, -250, 20, 0, piano_env));
     project.regions.push(make_region(25, 60, VHL_LOOP_CONTINUOUS, 250, 35, 15, harm_env));
+    project.region_names = vec!["Piano Bass".to_string(), "Harmonium Lead".to_string()];
 
     // Built-in reed sample: exactly one cycle of a 130.86 Hz tone (44100 / 337), so root key C3 (48) is in tune.
     let period = 337usize;
@@ -199,6 +213,8 @@ fn default_project() -> VhlProject {
 impl Default for HarmoniumApp {
     fn default() -> Self {
         let mut app = Self {
+            current_view: AppView::Landing,
+            modulator_view: crate::modulator_editor::ModulatorEditorView::default(),
             project_name: "HarmoniumStudio V2".to_string(),
             project_path: None,
             active_sample_idx: 0,
@@ -274,6 +290,7 @@ impl Default for HarmoniumApp {
         }
         app.pull_region_params();
         app.rebuild_patch();
+        app.modulator_view.sync_from_vhl(&app.project.modulators);
         app
     }
 }
@@ -312,7 +329,9 @@ impl HarmoniumApp {
         }
         self.rebuild_key_map();
         self.audio_player.set_master_volume(self.master_volume / 100.0);
-        self.audio_player.set_patch(Patch::from_project(&self.project, &self.engine_pcm));
+        let mut patch = Patch::from_project(&self.project, &self.engine_pcm);
+        patch.custom_curves = self.modulator_view.get_custom_curves();
+        self.audio_player.set_patch(patch);
         self.patch_dirty = false;
     }
 
@@ -373,8 +392,43 @@ impl HarmoniumApp {
             .position(|i| idx >= i.region_offset as usize && idx < i.region_offset as usize + i.region_count as usize)
     }
 
+    #[allow(dead_code)]
     fn region_inst_name(&self, idx: usize) -> String {
         self.region_owner(idx).map(|o| instrument_name(&self.project.instruments[o])).unwrap_or_else(|| "—".to_string())
+    }
+
+    pub fn region_color(idx: usize) -> Color32 {
+        const REGION_PALETTE: [Color32; 10] = [
+            Color32::from_rgb(0, 210, 180),    // 0: Teal
+            Color32::from_rgb(255, 107, 107),  // 1: Coral
+            Color32::from_rgb(255, 209, 102),  // 2: Gold
+            Color32::from_rgb(160, 108, 213),  // 3: Violet
+            Color32::from_rgb(6, 214, 160),    // 4: Emerald
+            Color32::from_rgb(17, 138, 178),   // 5: Sky Blue
+            Color32::from_rgb(239, 71, 111),   // 6: Rose Pink
+            Color32::from_rgb(181, 228, 140),  // 7: Lime Green
+            Color32::from_rgb(247, 127, 0),    // 8: Tangerine
+            Color32::from_rgb(114, 9, 183),    // 9: Deep Purple
+        ];
+        REGION_PALETTE[idx % REGION_PALETTE.len()]
+    }
+
+    pub fn region_text_color(idx: usize) -> Color32 {
+        Self::region_color(idx)
+    }
+
+    pub fn region_name(&self, idx: usize) -> String {
+        if let Some(name) = self.project.region_names.get(idx) {
+            if !name.trim().is_empty() {
+                return name.clone();
+            }
+        }
+        if let Some(reg) = self.project.regions.get(idx) {
+            if let Some(s) = self.project.samples.get(reg.sample_id as usize) {
+                return s.name.clone();
+            }
+        }
+        format!("Region #{}", idx)
     }
 
     fn inst_color(theme: &AppTheme, owner: Option<usize>) -> Color32 {
@@ -386,6 +440,7 @@ impl HarmoniumApp {
         }
     }
 
+    #[allow(dead_code)]
     fn inst_text_color(theme: &AppTheme, owner: Option<usize>) -> Color32 {
         match owner {
             Some(0) => theme.teal_text,
@@ -397,9 +452,14 @@ impl HarmoniumApp {
 
     /// Adds a copy of the selected region (same sample and settings) right after it, inside the same instrument.
     pub fn add_region(&mut self) {
+        if self.project.regions.len() >= 10 {
+            self.log("[REGION] Limit reached: Maximum 10 regions allowed.".to_string());
+            return;
+        }
         if self.project.regions.is_empty() {
             let env = VHLEnvelope { delay_ms: 0, attack_ms: 25, hold_ms: 10, decay_ms: 150, sustain_level: 900, release_ms: 80, key_to_hold: 0, key_to_decay: 0 };
             self.project.regions.push(make_region(0, 60, VHL_LOOP_CONTINUOUS, 0, 20, 0, env));
+            self.project.region_names = vec!["Region #0".to_string()];
             self.select_region(0);
             self.patch_dirty = true;
             return;
@@ -412,6 +472,12 @@ impl HarmoniumApp {
             None => self.project.regions.len(),
         };
         self.project.regions.insert(at, copy);
+        let new_name = format!("Region #{}", at);
+        if at <= self.project.region_names.len() {
+            self.project.region_names.insert(at, new_name);
+        } else {
+            self.project.region_names.push(new_name);
+        }
         for (j, inst) in self.project.instruments.iter_mut().enumerate() {
             if Some(j) == owner {
                 inst.region_count += 1;
@@ -430,6 +496,9 @@ impl HarmoniumApp {
         }
         let owner = self.region_owner(idx);
         self.project.regions.remove(idx);
+        if idx < self.project.region_names.len() {
+            self.project.region_names.remove(idx);
+        }
         for (j, inst) in self.project.instruments.iter_mut().enumerate() {
             if Some(j) == owner {
                 inst.region_count = inst.region_count.saturating_sub(1);
@@ -499,29 +568,29 @@ impl HarmoniumApp {
     }
 
     /// Colour of the region that answers each key (None = no region: the key is silent).
-    fn key_zones(&self, theme: &AppTheme) -> KeyZones {
+    fn key_zones(&self, _theme: &AppTheme) -> KeyZones {
         let mut z: KeyZones = [None; KEY_COUNT];
         for (i, slot) in z.iter_mut().enumerate() {
-            *slot = self.project.regions.iter().enumerate().find(|(_, r)| i as u8 >= r.key_lo && i as u8 <= r.key_hi).map(|(ri, _)| Self::inst_color(theme, self.region_owner(ri)));
+            *slot = self.project.regions.iter().enumerate().find(|(_, r)| i as u8 >= r.key_lo && i as u8 <= r.key_hi).map(|(ri, _)| Self::region_color(ri));
         }
         z
     }
 
-    fn region_bars(&self, theme: &AppTheme) -> Vec<RegionBar> {
+    fn region_bars(&self, _theme: &AppTheme) -> Vec<RegionBar> {
         self.project
             .regions
             .iter()
             .enumerate()
             .map(|(i, r)| {
-                let owner = self.region_owner(i);
+                let name = self.region_name(i);
                 RegionBar {
                     lo: r.key_lo,
                     hi: r.key_hi,
-                    color: Self::inst_color(theme, owner),
-                    text_color: Self::inst_text_color(theme, owner),
+                    color: Self::region_color(i),
+                    text_color: Self::region_text_color(i),
                     label: {
                         let shift = r.coarse_tune as i32;
-                        let mut l = format!("R{} {} · {}–{}", i, self.region_inst_name(i), key_note_name(r.key_lo), key_note_name(r.key_hi));
+                        let mut l = format!("R{} {} · {}–{}", i, name, key_note_name(r.key_lo), key_note_name(r.key_hi));
                         if shift != 0 {
                             let p = |k: u8| midi_note_name((k as i32 + 36 + shift).clamp(0, 127) as u8);
                             l.push_str(&format!(" → sounds {}–{}", p(r.key_lo), p(r.key_hi)));
@@ -559,6 +628,7 @@ impl HarmoniumApp {
         self.active_region_idx = 0;
         self.select_region(0);
         self.samples_changed();
+        self.modulator_view.sync_from_vhl(&self.project.modulators);
         self.log("[PROJECT] Initialized new project.");
     }
 
@@ -586,6 +656,7 @@ impl HarmoniumApp {
                     }
                     self.select_region(0);
                     self.samples_changed();
+                    self.modulator_view.sync_from_vhl(&self.project.modulators);
                     self.log(format!("[PROJECT] Opened: {} ({:?})", self.project_name, path));
                 }
                 Err(e) => self.log(format!("[ERROR] Failed to open project: {}", e)),
@@ -763,7 +834,12 @@ impl HarmoniumApp {
                 }
                 if let Some(idx) = laptop_key_to_piano_key(key, modifiers.shift) {
                     self.laptop_notes.insert(key, idx);
-                    self.key_on(now, idx, 110);
+                    let vel = if self.current_view == AppView::ModulationEditor {
+                        (self.modulator_view.test_velocity as u8).max(1)
+                    } else {
+                        110
+                    };
+                    self.key_on(now, idx, vel);
                 }
             } else if let Some(idx) = self.laptop_notes.remove(&key) {
                 // Releases are always honoured, even if a text box grabbed focus while the key was down.
@@ -778,7 +854,12 @@ impl HarmoniumApp {
                 self.key_off(now, old);
             }
             if let Some(k) = pressed {
-                self.key_on(now, k, 100);
+                let vel = if self.current_view == AppView::ModulationEditor {
+                    (self.modulator_view.test_velocity as u8).max(1)
+                } else {
+                    100
+                };
+                self.key_on(now, k, vel);
                 self.mouse_key = Some(k);
             }
         }
@@ -845,46 +926,123 @@ impl eframe::App for HarmoniumApp {
 
         let screen_h = ctx.screen_rect().height();
 
-        // 1. Header ----------------------------------------------------------
-        egui::TopBottomPanel::top("top_header_panel")
-            .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::symmetric(14.0, 8.0)))
-            .show(ctx, |ui| self.ui_header(ui, &theme));
+        match self.current_view {
+            AppView::Landing => {
+                let action = crate::landing::LandingPage::show(
+                    ctx,
+                    &theme,
+                    &self.project_name,
+                    self.project.samples.len(),
+                    self.project.regions.len(),
+                    self.audio_player.host_rate(),
+                    self.audio_player.is_ok(),
+                );
+                match action {
+                    crate::landing::LandingAction::OpenSoundEditor => {
+                        self.current_view = AppView::SoundEditor;
+                    }
+                    crate::landing::LandingAction::OpenProject => {
+                        self.open_project_dialog();
+                        self.current_view = AppView::SoundEditor;
+                    }
+                    crate::landing::LandingAction::OpenModulationEditor => {
+                        self.current_view = AppView::ModulationEditor;
+                    }
+                    crate::landing::LandingAction::None => {}
+                }
+            }
+            AppView::SoundEditor => {
+                // 1. Header ----------------------------------------------------------
+                egui::TopBottomPanel::top("top_header_panel")
+                    .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::symmetric(14.0, 8.0)))
+                    .show(ctx, |ui| self.ui_header(ui, &theme));
 
-        // 2. Status bar ------------------------------------------------------
-        egui::TopBottomPanel::bottom("bottom_status_panel")
-            .frame(Frame::none().fill(theme.window).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::symmetric(14.0, 4.0)))
-            .show(ctx, |ui| self.ui_status(ui, &theme));
+                // 2. Status bar ------------------------------------------------------
+                egui::TopBottomPanel::bottom("bottom_status_panel")
+                    .frame(Frame::none().fill(theme.window).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::symmetric(14.0, 4.0)))
+                    .show(ctx, |ui| self.ui_status(ui, &theme));
 
-        // 3. Dock: tape deck + waterfall + keyboard (full width, above status bar)
-        egui::TopBottomPanel::bottom("dock_panel")
-            .resizable(false)
-            .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin { left: 12.0, right: 12.0, top: 10.0, bottom: 12.0 }))
-            .show(ctx, |ui| self.ui_dock(ui, &theme, now, screen_h));
+                // 3. Dock: tape deck + waterfall + keyboard (full width, above status bar)
+                egui::TopBottomPanel::bottom("dock_panel")
+                    .resizable(false)
+                    .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin { left: 12.0, right: 12.0, top: 10.0, bottom: 12.0 }))
+                    .show(ctx, |ui| self.ui_dock(ui, &theme, now, screen_h));
 
-        // 4. Library (left) --------------------------------------------------
-        if self.show_left_sidebar {
-            egui::SidePanel::left("left_asset_sidebar")
-                .default_width(220.0)
-                .width_range(180.0..=320.0)
-                .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)))
-                .show(ctx, |ui| self.ui_library(ui, &theme));
+                // 4. Library (left) --------------------------------------------------
+                if self.show_left_sidebar {
+                    egui::SidePanel::left("left_asset_sidebar")
+                        .default_width(220.0)
+                        .width_range(180.0..=320.0)
+                        .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)))
+                        .show(ctx, |ui| self.ui_library(ui, &theme));
+                }
+
+                // 5. Inspector (right) ------------------------------------------------
+                if self.show_right_inspector {
+                    egui::SidePanel::right("right_parameter_inspector")
+                        .default_width(320.0)
+                        .width_range(290.0..=440.0)
+                        .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::same(12.0)))
+                        .show(ctx, |ui| self.ui_inspector(ui, &theme));
+                }
+
+                // 6. Workspace --------------------------------------------------------
+                egui::CentralPanel::default().frame(Frame::none().fill(theme.window)).show(ctx, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        Frame::none().inner_margin(Margin::same(12.0)).show(ui, |ui| self.ui_workspace(ui, &theme));
+                    });
+                });
+            }
+            AppView::ModulationEditor => {
+                // 1. Header
+                egui::TopBottomPanel::top("top_header_panel")
+                    .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::symmetric(14.0, 8.0)))
+                    .show(ctx, |ui| self.ui_header(ui, &theme));
+
+                // 2. Status bar
+                egui::TopBottomPanel::bottom("bottom_status_panel")
+                    .frame(Frame::none().fill(theme.window).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::symmetric(14.0, 4.0)))
+                    .show(ctx, |ui| self.ui_status(ui, &theme));
+
+                // 3. Dock: keyboard & waterfall to test modulations in real time
+                egui::TopBottomPanel::bottom("dock_panel")
+                    .resizable(false)
+                    .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin { left: 12.0, right: 12.0, top: 10.0, bottom: 12.0 }))
+                    .show(ctx, |ui| self.ui_dock(ui, &theme, now, screen_h));
+
+                // 4. Central Modulation Rack
+                egui::CentralPanel::default().frame(Frame::none().fill(theme.window)).show(ctx, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        Frame::none().inner_margin(Margin::same(12.0)).show(ui, |ui| {
+                            let reg_names: Vec<String> = self.project.regions.iter().enumerate().map(|(i, _)| {
+                                format!("Region #{}: {}", i, self.region_name(i))
+                            }).collect();
+                            let action = self.modulator_view.show(ui, &theme, &reg_names);
+                            let new_mods = self.modulator_view.to_vhl();
+                            if new_mods != self.project.modulators || ui.input(|i| i.pointer.any_down()) {
+                                self.project.modulators = new_mods;
+                                self.patch_dirty = true;
+                            }
+                            self.audio_player.control_change(1, self.modulator_view.test_mod_wheel as u8);
+                            self.audio_player.control_change(11, self.modulator_view.test_expression as u8);
+                            self.audio_player.pitch_bend(self.modulator_view.test_pitch_bend as i16);
+                            match action {
+                                crate::modulator_editor::ModulatorViewAction::BackToLanding => {
+                                    self.current_view = AppView::Landing;
+                                }
+                                crate::modulator_editor::ModulatorViewAction::OpenSoundEditor => {
+                                    self.current_view = AppView::SoundEditor;
+                                }
+                                crate::modulator_editor::ModulatorViewAction::None => {}
+                            }
+                        });
+                    });
+                });
+            }
+            AppView::LivePlayer => {
+                self.current_view = AppView::Landing;
+            }
         }
-
-        // 5. Inspector (right) ------------------------------------------------
-        if self.show_right_inspector {
-            egui::SidePanel::right("right_parameter_inspector")
-                .default_width(320.0)
-                .width_range(290.0..=440.0)
-                .frame(Frame::none().fill(theme.panel).stroke(Stroke::new(1.0_f32, theme.hairline)).inner_margin(Margin::same(12.0)))
-                .show(ctx, |ui| self.ui_inspector(ui, &theme));
-        }
-
-        // 6. Workspace --------------------------------------------------------
-        egui::CentralPanel::default().frame(Frame::none().fill(theme.window)).show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                Frame::none().inner_margin(Margin::same(12.0)).show(ui, |ui| self.ui_workspace(ui, &theme));
-            });
-        });
 
         // 7. Raga learner modal -------------------------------------------------
         if self.show_note_learner_modal {
@@ -997,6 +1155,54 @@ impl HarmoniumApp {
                 }
             });
         }
+        ui.separator();
+
+        // View navigation switcher (Home / Sound Editor / Modulator Editor)
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let home_active = self.current_view == AppView::Landing;
+            let editor_active = self.current_view == AppView::SoundEditor;
+            let mod_active = self.current_view == AppView::ModulationEditor;
+
+            let (h_fill, h_stroke, h_text) = if home_active {
+                (theme.teal.gamma_multiply(0.18), Stroke::new(1.0_f32, theme.teal), theme.teal)
+            } else {
+                (Color32::TRANSPARENT, Stroke::new(1.0_f32, theme.hairline), theme.text_dim)
+            };
+            if ui.add(egui::Button::new(RichText::new("🏠 Home").size(12.0).color(h_text))
+                .fill(h_fill)
+                .stroke(h_stroke)
+                .rounding(Rounding::same(4.0))
+            ).on_hover_text("Return to landing page").clicked() {
+                self.current_view = AppView::Landing;
+            }
+
+            let (e_fill, e_stroke, e_text) = if editor_active {
+                (theme.teal.gamma_multiply(0.18), Stroke::new(1.0_f32, theme.teal), theme.teal)
+            } else {
+                (Color32::TRANSPARENT, Stroke::new(1.0_f32, theme.hairline), theme.text_dim)
+            };
+            if ui.add(egui::Button::new(RichText::new("🎹 Sound Editor").size(12.0).color(e_text))
+                .fill(e_fill)
+                .stroke(e_stroke)
+                .rounding(Rounding::same(4.0))
+            ).on_hover_text("Synthesizer & multi-sample editor").clicked() {
+                self.current_view = AppView::SoundEditor;
+            }
+
+            let (m_fill, m_stroke, m_text) = if mod_active {
+                (theme.coral.gamma_multiply(0.18), Stroke::new(1.0_f32, theme.coral), theme.coral)
+            } else {
+                (Color32::TRANSPARENT, Stroke::new(1.0_f32, theme.hairline), theme.text_dim)
+            };
+            if ui.add(egui::Button::new(RichText::new("⚡ Modulators").size(12.0).color(m_text))
+                .fill(m_fill)
+                .stroke(m_stroke)
+                .rounding(Rounding::same(4.0))
+            ).on_hover_text("Dynamic SoundFont 2 modulator routing matrix").clicked() {
+                self.current_view = AppView::ModulationEditor;
+            }
+        });
         ui.separator();
 
         // Project menu
@@ -1466,11 +1672,12 @@ impl HarmoniumApp {
                 let mut select_reg: Option<usize> = None;
                 group(ui, "REGIONS", Some(self.project.regions.len()), &mut |ui| {
                     for (idx, r) in self.project.regions.iter().enumerate() {
-                        let label = format!("R{} · keys {}-{}", idx, r.key_lo, r.key_hi);
+                        let rname = self.region_name(idx);
+                        let label = format!("R{} {} · {}-{}", idx, rname, key_note_name(r.key_lo), key_note_name(r.key_hi));
                         if show(&label) {
                             let owner = self.region_owner(idx);
                             let meta = owner.map(|o| instrument_name(&self.project.instruments[o])).unwrap_or_default();
-                            if tree_row(ui, theme, Self::inst_color(theme, owner), &label, &meta, idx == self.active_region_idx, theme.text_dim).clicked() {
+                            if tree_row(ui, theme, Self::region_color(idx), &label, &meta, idx == self.active_region_idx, theme.text_dim).clicked() {
                                 select_reg = Some(idx);
                             }
                         }
@@ -1664,7 +1871,11 @@ impl HarmoniumApp {
                 ui.add(egui::Label::new(RichText::new("Edits the selected region").size(11.0).color(theme.text_dim)).truncate());
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new(format!("{} Add Region", icons::PLUS)).size(12.0))).on_hover_text("Add a copy of the selected region, then give it its own sample and key range").clicked() {
+                let can_add = n < 10;
+                let add_btn = egui::Button::new(RichText::new(format!("{} Add Region ({}/10)", icons::PLUS, n)).size(12.0));
+                if ui.add_enabled(can_add, add_btn)
+                    .on_hover_text(if can_add { "Add a copy of the selected region" } else { "Maximum limit of 10 regions reached" })
+                    .clicked() {
                     do_add = true;
                 }
             });
@@ -1675,14 +1886,12 @@ impl HarmoniumApp {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
             for i in 0..n {
-                let owner = self.region_owner(i);
-                let inst = owner.map(|o| instrument_name(&self.project.instruments[o])).unwrap_or_default();
-                let text = format!("R{} {}", i, inst);
-                let w = (text.chars().count() as f32 * 6.6 + 30.0).clamp(54.0, 150.0);
+                let text = format!("R{} {}", i, self.region_name(i));
+                let w = (text.chars().count() as f32 * 6.6 + 30.0).clamp(54.0, 160.0);
                 let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 26.0), Sense::click());
                 let active = i == self.active_region_idx;
                 let p = ui.painter();
-                let col = Self::inst_color(theme, owner);
+                let col = Self::region_color(i);
                 p.rect(r, Rounding::same(13.0), if active { AppTheme::alpha(col, 40) } else if resp.hovered() { theme.raised } else { Color32::TRANSPARENT }, Stroke::new(1.0_f32, if active { col } else { theme.hairline }));
                 p.circle_filled(Pos2::new(r.min.x + 12.0, r.center().y), 3.5, col);
                 ui.painter_at(r).text(Pos2::new(r.min.x + 22.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(11.5), if active { theme.text } else { theme.text_dim });
@@ -1695,12 +1904,22 @@ impl HarmoniumApp {
 
         let ri = self.active_region_idx.min(n.saturating_sub(1));
         if n > 0 {
-            let owner = self.region_owner(ri);
-            let title = format!("REGION {} · {}", ri, self.region_inst_name(ri).to_uppercase());
             ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                ui.painter().rect_filled(r, Rounding::same(2.0), Self::inst_color(theme, owner));
-                ui.label(RichText::new(title).strong().size(11.5).color(theme.text));
+                let col = Self::region_color(ri);
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                ui.painter().rect_filled(r, Rounding::same(2.5), col);
+                ui.label(RichText::new(format!("REGION {}", ri)).strong().size(12.0).color(col));
+
+                while self.project.region_names.len() <= ri {
+                    self.project.region_names.push(self.region_name(self.project.region_names.len()));
+                }
+                let mut cur_name = self.project.region_names[ri].clone();
+                let name_resp = ui.add(egui::TextEdit::singleline(&mut cur_name).desired_width(140.0).hint_text("Region Name..."));
+                if name_resp.changed() {
+                    self.project.region_names[ri] = cur_name;
+                    self.patch_dirty = true;
+                }
+
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if n > 1 {
                         let armed = self.pending_delete_region == Some(ri);

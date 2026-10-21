@@ -7,6 +7,8 @@ pub mod visuals;
 mod widgets; 
 mod icons;
 pub mod project;
+pub mod landing;
+pub mod modulator_editor;
 
 use app::HarmoniumApp;
 

@@ -74,7 +74,7 @@ pub struct VHLFileHeader_v2 {
     pub offset_sample_directory: u32,
     pub offset_lookup_table: u32,
     pub offset_pcm_data: u32,
-    pub offset_reserved: u32,
+    pub offset_modulator_table: u32,
 
     pub total_file_size: u32,
     pub crc32: u32,
@@ -84,7 +84,8 @@ pub struct VHLFileHeader_v2 {
     pub _reserved_meta: u16,
 
     pub build_tag: [u8; VHL_BUILD_TAG_LEN],
-    pub _reserved_future: [u8; 26],
+    pub total_modulator_count: u16,
+    pub _reserved_future: [u8; 24],
 }
 
 // ============================================================================
@@ -266,6 +267,235 @@ pub struct VHLLookupEntry {
     pub _reserved: u8,
 }
 
+// ============================================================================
+// SECTION 7: SOUNDFONT 2 COMPATIBLE MODULATOR TABLE (12 Bytes per Modulator)
+// ============================================================================
+
+// Sources (Primary and Secondary Controllers)
+pub const SF_MOD_SRC_NONE: u16 = 0;
+pub const SF_MOD_SRC_VELOCITY: u16 = 2;              // Note-on Velocity (0..127)
+pub const SF_MOD_SRC_KEY: u16 = 3;                   // Key Number (0..127)
+pub const SF_MOD_SRC_POLY_PRESSURE: u16 = 10;        // Key Pressure / Poly Aftertouch
+pub const SF_MOD_SRC_CHANNEL_PRESSURE: u16 = 13;     // Channel Pressure / Mono Aftertouch
+pub const SF_MOD_SRC_PITCH_WHEEL: u16 = 14;          // Pitch Bend Wheel (-8192..+8191)
+pub const SF_MOD_SRC_PITCH_WHEEL_SENS: u16 = 16;     // Pitch Bend Sensitivity
+pub const SF_MOD_SRC_MOD_ENV: u16 = 20;              // Internal Modulation Envelope
+pub const SF_MOD_SRC_MOD_LFO: u16 = 21;              // Internal Mod LFO
+pub const SF_MOD_SRC_VIB_LFO: u16 = 22;              // Internal Vibrato LFO
+pub const SF_MOD_SRC_CC_FLAG: u16 = 0x80;            // Bit 7 indicates MIDI Continuous Controller
+
+// Standard MIDI CCs
+pub const SF_MOD_CC_MOD_WHEEL: u16 = 1;
+pub const SF_MOD_CC_BREATH: u16 = 2;
+pub const SF_MOD_CC_VOLUME: u16 = 7;
+pub const SF_MOD_CC_PAN: u16 = 10;
+pub const SF_MOD_CC_EXPRESSION: u16 = 11;
+pub const SF_MOD_CC_SUSTAIN: u16 = 64;
+pub const SF_MOD_CC_REVERB: u16 = 91;
+pub const SF_MOD_CC_CHORUS: u16 = 93;
+
+// Destinations (SoundFont 2 Standard Generators)
+pub const SF_GEN_MOD_LFO_TO_PITCH: u16 = 5;
+pub const SF_GEN_VIB_LFO_TO_PITCH: u16 = 6;
+pub const SF_GEN_INITIAL_FILTER_FC: u16 = 8;
+pub const SF_GEN_INITIAL_FILTER_Q: u16 = 9;
+pub const SF_GEN_MOD_LFO_TO_FILTER_FC: u16 = 10;
+pub const SF_GEN_MOD_LFO_TO_VOLUME: u16 = 11;
+pub const SF_GEN_CHORUS_EFFECTS_SEND: u16 = 15;
+pub const SF_GEN_REVERB_EFFECTS_SEND: u16 = 16;
+pub const SF_GEN_PAN: u16 = 17;
+pub const SF_GEN_VOL_ENV_ATTACK: u16 = 34;
+pub const SF_GEN_VOL_ENV_HOLD: u16 = 35;
+pub const SF_GEN_VOL_ENV_DECAY: u16 = 36;
+pub const SF_GEN_VOL_ENV_SUSTAIN: u16 = 37;
+pub const SF_GEN_VOL_ENV_RELEASE: u16 = 38;
+pub const SF_GEN_MOD_ENV_TO_PITCH: u16 = 43;
+pub const SF_GEN_MOD_ENV_TO_FILTER_FC: u16 = 44;
+pub const SF_GEN_INITIAL_ATTENUATION: u16 = 48;
+pub const SF_GEN_COARSE_TUNE: u16 = 51;
+pub const SF_GEN_FINE_TUNE: u16 = 52;
+pub const SF_GEN_SCALE_TUNING: u16 = 56;
+
+// Curves (Transfer Functions)
+pub const SF_CURVE_LINEAR: u8 = 0;
+pub const SF_CURVE_CONCAVE: u8 = 1;
+pub const SF_CURVE_CONVEX: u8 = 2;
+pub const SF_CURVE_SWITCH: u8 = 3;
+pub const SF_CURVE_CUSTOM: u8 = 4;
+
+// Direction
+pub const SF_DIR_ASCENDING: u8 = 0;
+pub const SF_DIR_DESCENDING: u8 = 1;
+
+// Polarity
+pub const SF_POL_UNIPOLAR: u8 = 0;
+pub const SF_POL_BIPOLAR: u8 = 1;
+
+// Transforms
+pub const SF_TRANSFORM_LINEAR: u8 = 0;
+pub const SF_TRANSFORM_ABSOLUTE: u8 = 2;
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VHLModulator_v2 {
+    pub src_oper: u16,      // Bitfields: [15:10]=Curve, [9]=Bipolar, [8]=Descending, [7]=CC, [6:0]=Controller
+    pub dest_oper: u16,     // Target generator enum or linked modulator index
+    pub amt_src_oper: u16,  // Secondary controller bitfields (0 = None)
+    pub amount: i16,        // Modulation amount in target generator units
+    pub transform: u8,      // 0 = linear, 2 = absolute_value
+    pub flags: u8,          // Bit 0 = enabled
+    pub index: u16,         // Modulator ID / index
+}
+
+impl VHLModulator_v2 {
+    pub fn pack_source(ctrl: u8, is_cc: bool, curve: u8, descending: bool, bipolar: bool) -> u16 {
+        let mut val = (ctrl as u16) & 0x7F;
+        if is_cc { val |= 0x80; }
+        if descending { val |= 1 << 8; }
+        if bipolar { val |= 1 << 9; }
+        val |= ((curve as u16) & 0x3F) << 10;
+        val
+    }
+
+    pub fn unpack_source(oper: u16) -> (u8, bool, u8, bool, bool) {
+        let ctrl = (oper & 0x7F) as u8;
+        let is_cc = (oper & 0x80) != 0;
+        let descending = (oper & (1 << 8)) != 0;
+        let bipolar = (oper & (1 << 9)) != 0;
+        let curve = ((oper >> 10) & 0x3F) as u8;
+        (ctrl, is_cc, curve, descending, bipolar)
+    }
+
+    pub fn source_name(oper: u16) -> String {
+        let (ctrl, is_cc, _, _, _) = Self::unpack_source(oper);
+        if is_cc {
+            match ctrl as u16 {
+                SF_MOD_CC_MOD_WHEEL => "Mod Wheel (CC1)".to_string(),
+                SF_MOD_CC_BREATH => "Breath (CC2)".to_string(),
+                SF_MOD_CC_VOLUME => "Volume (CC7)".to_string(),
+                SF_MOD_CC_PAN => "Pan (CC10)".to_string(),
+                SF_MOD_CC_EXPRESSION => "Expression (CC11)".to_string(),
+                SF_MOD_CC_SUSTAIN => "Sustain Pedal (CC64)".to_string(),
+                SF_MOD_CC_REVERB => "Reverb Send (CC91)".to_string(),
+                SF_MOD_CC_CHORUS => "Chorus Send (CC93)".to_string(),
+                c => format!("CC-{}", c),
+            }
+        } else {
+            match ctrl as u16 {
+                SF_MOD_SRC_NONE => "None / Constant 1.0".to_string(),
+                SF_MOD_SRC_VELOCITY => "Key Velocity".to_string(),
+                SF_MOD_SRC_KEY => "Key Number (Pitch Track)".to_string(),
+                SF_MOD_SRC_POLY_PRESSURE => "Key Pressure".to_string(),
+                SF_MOD_SRC_CHANNEL_PRESSURE => "Channel Pressure / Aftertouch".to_string(),
+                SF_MOD_SRC_PITCH_WHEEL => "Pitch Wheel".to_string(),
+                SF_MOD_SRC_PITCH_WHEEL_SENS => "Pitch Bend Range".to_string(),
+                SF_MOD_SRC_MOD_ENV => "Modulation Envelope".to_string(),
+                SF_MOD_SRC_MOD_LFO => "Mod LFO".to_string(),
+                SF_MOD_SRC_VIB_LFO => "Vibrato LFO".to_string(),
+                _ => format!("Source #{}", ctrl),
+            }
+        }
+    }
+
+    pub fn dest_name(dest: u16) -> String {
+        match dest {
+            SF_GEN_INITIAL_ATTENUATION => "Initial Attenuation (Volume dB)".to_string(),
+            SF_GEN_INITIAL_FILTER_FC => "Filter Cutoff (Hz / Cents)".to_string(),
+            SF_GEN_INITIAL_FILTER_Q => "Filter Resonance (cB)".to_string(),
+            SF_GEN_MOD_ENV_TO_FILTER_FC => "Mod Env -> Filter Cutoff".to_string(),
+            SF_GEN_MOD_ENV_TO_PITCH => "Mod Env -> Pitch".to_string(),
+            SF_GEN_MOD_LFO_TO_VOLUME => "Mod LFO -> Volume (Tremolo)".to_string(),
+            SF_GEN_MOD_LFO_TO_PITCH => "Mod LFO -> Pitch (Vibrato)".to_string(),
+            SF_GEN_MOD_LFO_TO_FILTER_FC => "Mod LFO -> Filter (Wah)".to_string(),
+            SF_GEN_VIB_LFO_TO_PITCH => "Vibrato LFO -> Pitch".to_string(),
+            SF_GEN_PAN => "Stereo Pan [-100..+100]".to_string(),
+            SF_GEN_REVERB_EFFECTS_SEND => "Reverb Send (%)".to_string(),
+            SF_GEN_CHORUS_EFFECTS_SEND => "Chorus Send (%)".to_string(),
+            SF_GEN_FINE_TUNE => "Fine Tune (Cents)".to_string(),
+            SF_GEN_COARSE_TUNE => "Coarse Tune (Semitones)".to_string(),
+            SF_GEN_VOL_ENV_ATTACK => "Volume Attack Time".to_string(),
+            SF_GEN_VOL_ENV_DECAY => "Volume Decay Time".to_string(),
+            _ => format!("Destination #{}", dest),
+        }
+    }
+
+    /// Default modulators built-in for zero-hardware setup (keyboard velocity, pitch track, LFOs, envelopes)
+    pub fn default_modulators() -> Vec<Self> {
+        vec![
+            // 1. Key Velocity -> Volume Attenuation (Softer hits are quieter, harder hits are full loudness)
+            Self {
+                src_oper: Self::pack_source(SF_MOD_SRC_VELOCITY as u8, false, SF_CURVE_CONCAVE, true, false),
+                dest_oper: SF_GEN_INITIAL_ATTENUATION,
+                amt_src_oper: 0,
+                amount: 960, // up to 96 dB attenuation on zero velocity
+                transform: SF_TRANSFORM_LINEAR,
+                flags: 1,
+                index: 1,
+            },
+            // 2. Key Velocity -> Filter Cutoff (Hit softer = warmer/sweeter tone, hit harder = full bright reed)
+            Self {
+                src_oper: Self::pack_source(SF_MOD_SRC_VELOCITY as u8, false, SF_CURVE_LINEAR, true, false),
+                dest_oper: SF_GEN_INITIAL_FILTER_FC,
+                amt_src_oper: 0,
+                amount: -2400, // drops cutoff up to 2 octaves on soft hits
+                transform: SF_TRANSFORM_LINEAR,
+                flags: 1,
+                index: 2,
+            },
+            // 3. Key Number -> Volume Decay (Acoustic reed scaling: treble notes decay faster, bass sustains longer)
+            Self {
+                src_oper: Self::pack_source(SF_MOD_SRC_KEY as u8, false, SF_CURVE_LINEAR, false, true),
+                dest_oper: SF_GEN_VOL_ENV_DECAY,
+                amt_src_oper: 0,
+                amount: 100,
+                transform: SF_TRANSFORM_LINEAR,
+                flags: 1,
+                index: 3,
+            },
+            // 4. Modulation Envelope -> Filter Cutoff (Harmonium bellows / attack swell over time)
+            Self {
+                src_oper: Self::pack_source(SF_MOD_SRC_MOD_ENV as u8, false, SF_CURVE_LINEAR, false, false),
+                dest_oper: SF_GEN_INITIAL_FILTER_FC,
+                amt_src_oper: 0,
+                amount: 2400, // opens cutoff up to 2 octaves as envelope attacks
+                transform: SF_TRANSFORM_LINEAR,
+                flags: 1,
+                index: 4,
+            },
+            // 5. Modulation Envelope -> Reverb Send (Reverb evolves and blooms over time)
+            Self {
+                src_oper: Self::pack_source(SF_MOD_SRC_MOD_ENV as u8, false, SF_CURVE_LINEAR, false, false),
+                dest_oper: SF_GEN_REVERB_EFFECTS_SEND,
+                amt_src_oper: 0,
+                amount: 400, // up to 40% reverb bloom
+                transform: SF_TRANSFORM_LINEAR,
+                flags: 1,
+                index: 5,
+            },
+            // 6. Vibrato LFO -> Pitch (Natural gentle pitch flutter / vocal meend shimmer)
+            Self {
+                src_oper: Self::pack_source(SF_MOD_SRC_VIB_LFO as u8, false, SF_CURVE_LINEAR, false, true),
+                dest_oper: SF_GEN_VIB_LFO_TO_PITCH,
+                amt_src_oper: 0,
+                amount: 25, // +/- 25 cents vibrato
+                transform: SF_TRANSFORM_LINEAR,
+                flags: 1,
+                index: 6,
+            },
+            // 7. Mod Wheel CC1 -> Vibrato (If user has mod wheel on MIDI keyboard, lets them dial in vibrato)
+            Self {
+                src_oper: Self::pack_source(SF_MOD_CC_MOD_WHEEL as u8, true, SF_CURVE_LINEAR, false, false),
+                dest_oper: SF_GEN_VIB_LFO_TO_PITCH,
+                amt_src_oper: 0,
+                amount: 50,
+                transform: SF_TRANSFORM_LINEAR,
+                flags: 1,
+                index: 7,
+            },
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +515,17 @@ mod tests {
         assert_eq!(size_of::<VHLSampleEntry_v2>(), 32, "Sample Entry must be exactly 32 bytes");
         assert_eq!(size_of::<VHLLookupHeader>(), 4, "Lookup Header must be exactly 4 bytes");
         assert_eq!(size_of::<VHLLookupEntry>(), 4, "Lookup Entry must be exactly 4 bytes");
+        assert_eq!(size_of::<VHLModulator_v2>(), 12, "Modulator must be exactly 12 bytes");
+    }
+
+    #[test]
+    fn test_modulator_pack_unpack() {
+        let oper = VHLModulator_v2::pack_source(SF_MOD_CC_EXPRESSION as u8, true, SF_CURVE_CONCAVE, true, false);
+        let (ctrl, is_cc, curve, descending, bipolar) = VHLModulator_v2::unpack_source(oper);
+        assert_eq!(ctrl, 11);
+        assert!(is_cc);
+        assert_eq!(curve, SF_CURVE_CONCAVE);
+        assert!(descending);
+        assert!(!bipolar);
     }
 }

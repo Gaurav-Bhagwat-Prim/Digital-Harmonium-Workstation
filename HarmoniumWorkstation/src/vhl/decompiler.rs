@@ -50,7 +50,7 @@ impl VhlDecompiler {
         let offset_samples = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
         let _offset_lookup = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
         let offset_pcm = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
-        let _offset_reserved = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())?;
+        let offset_modulators = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
 
         let total_file_size = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
         let stored_crc32 = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())?;
@@ -62,6 +62,7 @@ impl VhlDecompiler {
         let mut build_tag_raw = [0u8; VHL_BUILD_TAG_LEN];
         cur.read_exact(&mut build_tag_raw).unwrap();
         let build_tag = String::from_utf8_lossy(&build_tag_raw).trim_matches('\0').to_string();
+        let total_modulator_count = cur.read_u16::<LittleEndian>().unwrap_or(0) as usize;
 
         // 3. Verify CRC-32
         if total_file_size < 128 || total_file_size > data.len() {
@@ -302,6 +303,36 @@ impl VhlDecompiler {
             }
         }
 
+        // 8. Section 8: SoundFont 2 Compatible Modulator Table
+        let mut modulators = Vec::new();
+        if offset_modulators > 0 && offset_modulators < total_file_size {
+            let mut mod_cur = Cursor::new(&data[offset_modulators..]);
+            for _ in 0..total_modulator_count {
+                if mod_cur.position() as usize + 12 > (total_file_size.saturating_sub(offset_modulators)) {
+                    break;
+                }
+                let src_oper = mod_cur.read_u16::<LittleEndian>().map_err(|e| e.to_string())?;
+                let dest_oper = mod_cur.read_u16::<LittleEndian>().map_err(|e| e.to_string())?;
+                let amt_src_oper = mod_cur.read_u16::<LittleEndian>().map_err(|e| e.to_string())?;
+                let amount = mod_cur.read_i16::<LittleEndian>().map_err(|e| e.to_string())?;
+                let transform = mod_cur.read_u8().map_err(|e| e.to_string())?;
+                let flags = mod_cur.read_u8().map_err(|e| e.to_string())?;
+                let index = mod_cur.read_u16::<LittleEndian>().map_err(|e| e.to_string())?;
+                modulators.push(VHLModulator_v2 {
+                    src_oper,
+                    dest_oper,
+                    amt_src_oper,
+                    amount,
+                    transform,
+                    flags,
+                    index,
+                });
+            }
+        }
+        if modulators.is_empty() {
+            modulators = VHLModulator_v2::default_modulators();
+        }
+
         Ok(VhlProject {
             build_tag,
             target_sample_rate,
@@ -310,7 +341,9 @@ impl VhlDecompiler {
             tuning_table,
             instruments,
             regions,
+            region_names: Vec::new(),
             samples,
+            modulators,
         })
     }
 
