@@ -568,7 +568,7 @@ python receiver.py --port COM7 --device 1
 This project is currently **unlicensed / all rights reserved**.
 
 For academic or personal use inquiries, contact:  
-📧 gaurav@bhagwat.com
+📧 gauravgmb3@gmail.com
 
 ---
 
