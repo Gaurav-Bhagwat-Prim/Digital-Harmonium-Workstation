@@ -3,11 +3,8 @@
 # Project: ESP32 Digital Musical Workstation
 # =============================================================================
 
-# Explicitly exclude Polyphone reference codebase from repository
+# Explicitly exclude Polyphone reference codebase (third-party code, kept locally only)
 polyphone Source Code/
-polyphone Source Code
-"polyphone Source Code"
-"polyphone Source Code/"
 
 # Python bytecode and caches
 __pycache__/
@@ -15,23 +12,12 @@ __pycache__/
 *$py.class
 *.pyo
 
-# Rust build outputs & dependency locks
+# Rust: KEEP Cargo.lock (this is a binary app, not a library — lock file must be committed)
+# Only exclude the actual compiled output directory
 HarmoniumWorkstation/target/
-**/target/
-Cargo.lock.bk
 
-# C / C++ & CMake build outputs
-build/
-Builder/build/
-*.o
-*.obj
-*.exe
-.ninja_*
-CMakeCache.txt
-CMakeFiles/
-
-# Temporary / editor artifacts
-.vscode/
+# Editor / IDE artifacts
+.vscode/settings.json
 .idea/
 *.swp
 *~
