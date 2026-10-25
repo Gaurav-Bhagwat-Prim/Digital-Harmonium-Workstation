@@ -111,7 +111,7 @@ pub fn status_pill_width(ui: &Ui, text: &str) -> f32 {
 /// Rounded status pill with a glowing dot ("● ESP32 offline"). Empty text = just the dot.
 pub fn status_pill(ui: &mut Ui, color: Color32, fill: Color32, text_color: Color32, text: &str) -> Response {
     let w = status_pill_width(ui, text);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
     let p = ui.painter();
     p.rect(rect, Rounding::same(14.0), fill, Stroke::new(1.0_f32, AppTheme::alpha(color, 120)));
     let c = if text.is_empty() { rect.center() } else { Pos2::new(rect.min.x + 17.0, rect.center().y) };

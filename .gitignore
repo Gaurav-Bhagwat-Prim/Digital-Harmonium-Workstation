@@ -1,0 +1,39 @@
+# =============================================================================
+# Git Ignore Configuration
+# Project: ESP32 Digital Musical Workstation
+# =============================================================================
+
+# Explicitly exclude Polyphone reference codebase from repository
+polyphone Source Code/
+polyphone Source Code
+"polyphone Source Code"
+"polyphone Source Code/"
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Rust build outputs & dependency locks
+HarmoniumWorkstation/target/
+**/target/
+Cargo.lock.bk
+
+# C / C++ & CMake build outputs
+build/
+Builder/build/
+*.o
+*.obj
+*.exe
+.ninja_*
+CMakeCache.txt
+CMakeFiles/
+
+# Temporary / editor artifacts
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

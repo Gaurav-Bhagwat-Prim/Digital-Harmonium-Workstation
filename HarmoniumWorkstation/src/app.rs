@@ -739,6 +739,118 @@ impl HarmoniumApp {
         }
     }
 
+    /// Compile active project and upload to ESP32 over Wi-Fi
+    pub fn sync_to_esp32(&mut self) {
+        self.log("[SYNC] Compiling active VHL v2.0 project for ESP32...".to_string());
+        let bytes = match VhlCompiler::compile(&self.project) {
+            Ok(b) => b,
+            Err(e) => {
+                self.log(format!("[SYNC ERROR] Compilation failed: {}", e));
+                return;
+            }
+        };
+
+        let sz = bytes.len();
+        self.last_compiled_vhl = Some(bytes.clone());
+        let ip = self.esp32_ip.trim().to_string();
+        self.log(format!("[SYNC] Uploading package ({} bytes) to http://{}/api/upload_vhl ...", sz, ip));
+
+        match Self::send_vhl_http(&ip, &bytes) {
+            Ok(msg) => {
+                self.is_connected_wifi = true;
+                self.log(format!("[SYNC SUCCESS] {}", msg));
+            }
+            Err(e) => {
+                self.is_connected_wifi = false;
+                self.log(format!("[SYNC ERROR] Failed to send VHL to {}: {}", ip, e));
+            }
+        }
+    }
+
+    /// Check if the ESP32 HTTP endpoint is reachable
+    pub fn check_esp32_connection(&mut self) {
+        let ip = self.esp32_ip.trim().to_string();
+        self.log(format!("[WIFI] Probing ESP32 at http://{}:80/api/status ...", ip));
+        let online = (|| {
+            use std::io::{Read, Write};
+            use std::net::{TcpStream, ToSocketAddrs};
+            use std::time::Duration;
+
+            let addr_str = format!("{}:80", ip);
+            let mut addrs = addr_str.to_socket_addrs().ok()?;
+            let sock = addrs.next()?;
+            let mut stream = TcpStream::connect_timeout(&sock, Duration::from_millis(1500)).ok()?;
+            stream.set_read_timeout(Some(Duration::from_millis(2000))).ok();
+            stream.set_write_timeout(Some(Duration::from_millis(1500))).ok();
+            let req = format!("GET /api/status HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", ip);
+            stream.write_all(req.as_bytes()).ok()?;
+            stream.flush().ok()?;
+            let mut resp = [0u8; 512];
+            let n = stream.read(&mut resp).ok()?;
+            if n > 0 && String::from_utf8_lossy(&resp[..n]).contains("200 OK") {
+                Some(true)
+            } else {
+                None
+            }
+        })().unwrap_or(false);
+
+        self.is_connected_wifi = online;
+        if online {
+            self.log(format!("[WIFI ONLINE] ESP32 at {} is connected and responsive.", ip));
+        } else {
+            self.log(format!("[WIFI OFFLINE] Could not reach ESP32 at {}. Check that laptop Wi-Fi is connected to \"Harmonium-ESP32\".", ip));
+        }
+    }
+
+    fn send_vhl_http(ip: &str, data: &[u8]) -> Result<String, String> {
+        use std::io::{Read, Write};
+        use std::net::{TcpStream, ToSocketAddrs};
+        use std::time::Duration;
+
+        let addr_str = format!("{}:80", ip);
+        let mut addrs = addr_str.to_socket_addrs()
+            .map_err(|e| format!("Cannot resolve '{}': {}", addr_str, e))?;
+        let sock = addrs.next()
+            .ok_or_else(|| format!("Could not resolve address '{}'", addr_str))?;
+
+        let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(4))
+            .map_err(|e| format!("Could not connect to {}: {}. Ensure you are connected to the 'Harmonium-ESP32' Wi-Fi network.", addr_str, e))?;
+
+        stream.set_read_timeout(Some(Duration::from_secs(12))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(12))).ok();
+
+        let header = format!(
+            "POST /api/upload_vhl HTTP/1.1\r\n\
+             Host: {}\r\n\
+             Content-Type: application/octet-stream\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            ip,
+            data.len()
+        );
+
+        stream.write_all(header.as_bytes())
+            .map_err(|e| format!("Failed to send headers: {}", e))?;
+        stream.write_all(data)
+            .map_err(|e| format!("Failed to send VHL body: {}", e))?;
+        stream.flush().map_err(|e| format!("Flush error: {}", e))?;
+
+        let mut response = String::new();
+        match stream.read_to_string(&mut response) {
+            Ok(_) => {
+                if response.contains("200 OK") {
+                    Ok(format!("ESP32 received and loaded {} bytes successfully!", data.len()))
+                } else {
+                    let first_line = response.lines().next().unwrap_or("Unknown response");
+                    Err(format!("ESP32 error: {}", first_line))
+                }
+            }
+            Err(e) => {
+                Err(format!("Response read error: {}. (ESP32 might have restarted or closed connection)", e))
+            }
+        }
+    }
+
     /// Import one or more WAV files. The first imported sample is assigned to the selected region.
     pub fn import_wav_samples_dialog(&mut self) {
         let Some(paths) = rfd::FileDialog::new().set_title("Import WAV Samples").add_filter("WAV Audio", &["wav", "wave"]).pick_files() else { return };
@@ -1134,7 +1246,16 @@ impl HarmoniumApp {
                 if widgets::icon_toggle(ui, theme, icons::SIDEBAR_LEFT, "Asset library", self.show_left_sidebar) {
                     self.show_left_sidebar = !self.show_left_sidebar;
                 }
-                widgets::status_pill(ui, pill_color, pill_fill, pill_text_color, pill_txt).on_hover_text(if self.is_connected_wifi { "ESP32 connected" } else { "ESP32 not connected (Wi-Fi sync is not implemented yet)" });
+                if widgets::status_pill(ui, pill_color, pill_fill, pill_text_color, pill_txt)
+                    .on_hover_text(if self.is_connected_wifi {
+                        format!("ESP32 connected at {} (Click to re-check)", self.esp32_ip)
+                    } else {
+                        format!("ESP32 offline at {} (Click to test connection)", self.esp32_ip)
+                    })
+                    .clicked()
+                {
+                    self.check_esp32_connection();
+                }
             });
         });
     }
@@ -1252,12 +1373,8 @@ impl HarmoniumApp {
             self.import_vhl_package();
         }
         let sync_txt = if t1 { format!("{} Sync to ESP32", icons::SYNC) } else { icons::SYNC.to_string() };
-        if widgets::ghost_button(ui, &sync_txt).on_hover_text("Send the project to the ESP32").clicked() {
-            if self.is_connected_wifi {
-                self.log("[SYNC] Sending active VHL to ESP32...");
-            } else {
-                self.log("[SYNC] ESP32 is not connected. Use Compile VHL and copy the .vhl file to the device.");
-            }
+        if widgets::ghost_button(ui, &sync_txt).on_hover_text("Send the active project to the ESP32 via Wi-Fi").clicked() {
+            self.sync_to_esp32();
         }
 
         ui.separator();

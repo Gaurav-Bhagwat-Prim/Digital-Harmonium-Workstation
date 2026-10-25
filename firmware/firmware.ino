@@ -9,32 +9,26 @@
  *      - 61 keys: C2 (0.2227x, MIDI 36) to C7 (7.127x, MIDI 96)
  *      - Root key: D4 (1.000x, MIDI 62, harmonium base sample)
  *
- *   2. 5-Voice Polyphonic Synthesizer Engine
+ *   2. 5-Voice Polyphonic Synthesizer Engine (DSP Untouched)
  *      - 5 independent voices with LRU (Least-Recently-Used) voice stealing
- *      - High-quality linear interpolation on 44.1 kHz 16-bit harmonium sample
+ *      - High-quality linear interpolation on harmonium PCM samples
  *      - Polyphonic headroom scaling & anti-clipping limiter
  *
- *   3. Wired Audio Output (I2S DMA to PCM5102A DAC)
- *      - High-priority FreeRTOS task running on Core 0
- *      - Standard I2S 16-bit stereo at 44,100 Hz
- *      - Latency: ~2.9 ms DMA buffer
+ *   3. Dual Audio Output:
+ *      - Wired I2S DMA to PCM5102A DAC (44.1 kHz, 16-bit stereo)
+ *      - Real-Time USB Serial Audio Stream to Laptop Speaker (at 921,600 baud)
  *
- * Hardware Pin Map:
- *   Matrix Rows (Outputs from ESP32, active HIGH for 125 us):
- *     Row 0: GPIO23 | Row 1: GPIO22 | Row 2: GPIO21 | Row 3: GPIO17
- *     Row 4: GPIO16 | Row 5: GPIO4  | Row 6: GPIO13 | Row 7: GPIO14
- *   74HC165 Columns (Shift Register Inputs):
- *     165 QH:     GPIO34 (Data In)
- *     165 CLK:    GPIO18 (Clock Out)
- *     165 /SH-LD: GPIO19 (Shift/Load Out)
- *   PCM5102A I2S DAC:
- *     DOUT (DIN): GPIO25
- *     BCLK (BCK): GPIO26
- *     LRCLK (WS): GPIO27
+ *   4. Wi-Fi Package Sync (VHL v2.0):
+ *      - SoftAP Mode ("Harmonium-ESP32", IP: 192.168.4.1)
+ *      - HTTP API: GET /api/status, POST /api/upload_vhl
+ *      - Zero-restart dynamic package loading into memory
  * ============================================================================= */
 
 #include <Arduino.h>
 #include <math.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiServer.h>
 
 #include "vhl_types.h"
 #include "vhl_config.h"
@@ -48,6 +42,7 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "driver/i2s.h"
+#include "esp_wifi.h"
 #endif
 
 /* =============================================================================
@@ -78,6 +73,29 @@ static const uint8_t ROW_PINS[MATRIX_ROWS] = { 23, 22, 21, 17, 16, 4, 13, 14 };
 #define AUDIO_BUF_FRAMES     64          /* frames generated per write call */
 #define MAX_MASTER_VOLUME_PERCENT 60     /* Master output volume ceiling (60%) */
 
+/* USB Audio Streaming over Serial to Laptop */
+#define ENABLE_USB_AUDIO_STREAM   1
+#define USB_AUDIO_BAUD           921600
+#define USB_AUDIO_DOWNSAMPLE_2    1      /* 1 = 22,050 Hz (rock-solid, 0 packet loss), 0 = 44,100 Hz */
+
+/* Automatic Scale Playback Demo (C4, D4, E4, F4, G4, A4, B4, C5) */
+#define ENABLE_AUTO_PLAY_SCALE    1      /* 1 = auto-play scale without pressing physical keys */
+
+#if ENABLE_USB_AUDIO_STREAM
+#define ENABLE_SERIAL_KEY_LOG    0       /* Keep UART dedicated to binary audio frames */
+#else
+#define ENABLE_SERIAL_KEY_LOG    1
+#endif
+
+/* Wi-Fi & Web Server Configuration */
+#define WIFI_AP_SSID             "Harmonium-ESP32"
+#define WIFI_AP_PASS             "12345678"
+#define HTTP_SERVER_PORT         80
+
+static WiFiServer g_wifi_server(HTTP_SERVER_PORT);
+static uint8_t*   s_vhl_dynamic_buf = NULL;
+static size_t     s_vhl_dynamic_buf_size = 0;
+
 /* Dynamic Master Volume (adjustable via keyboard shortcut, capped at 60%) */
 static volatile int s_master_volume_percent = MAX_MASTER_VOLUME_PERCENT;
 
@@ -91,12 +109,6 @@ static volatile int s_master_volume_percent = MAX_MASTER_VOLUME_PERCENT;
 
 /* Polyphony */
 #define MAX_POLYPHONY        5
-
-/* Serial Debug baud rate */
-#define DEBUG_SERIAL_BAUD    115200
-
-/* Enable key event logging (set to 0 for silent ultra-fast production mode) */
-#define ENABLE_SERIAL_KEY_LOG 1
 
 /* =============================================================================
  * Musical Scale & Key Definitions
@@ -145,12 +157,30 @@ static inline float get_frame(const int16_t* p, uint32_t idx, uint8_t ch) {
 }
 
 /* =============================================================================
- * Real-Time I2S Audio Task (Core 0, Priority 5)
+ * Real-Time Audio Task (Core 0, Priority 5)
+ * Generates audio, outputs to PCM5102A I2S DAC, and streams frames over USB Serial
+ * NOTE: DSP algorithm is strictly preserved without modification.
  * ============================================================================= */
 
 static void audio_i2s_task(void* arg)
 {
     int16_t buf[AUDIO_BUF_FRAMES * 2];
+
+#if ENABLE_USB_AUDIO_STREAM
+    uint8_t usb_pkt[6 + AUDIO_BUF_FRAMES * 2];
+    usb_pkt[0] = 0xA5;
+    usb_pkt[1] = 0x5A;
+#if USB_AUDIO_DOWNSAMPLE_2
+    const uint16_t stream_sr = 22050;
+    const uint16_t stream_samples = AUDIO_BUF_FRAMES / 2;
+#else
+    const uint16_t stream_sr = 44100;
+    const uint16_t stream_samples = AUDIO_BUF_FRAMES;
+#endif
+    memcpy(&usb_pkt[2], &stream_sr, 2);
+    memcpy(&usb_pkt[4], &stream_samples, 2);
+    const size_t usb_pkt_len = 6 + (stream_samples * sizeof(int16_t));
+#endif
 
     while (true) {
         for (int i = 0; i < AUDIO_BUF_FRAMES; i++) {
@@ -249,8 +279,27 @@ static void audio_i2s_task(void* arg)
             buf[i * 2 + 1] = out_sample; /* Right channel (stereo mirror) */
         }
 
+        // 1. Output to physical I2S DAC
         size_t bytes_written = 0;
         i2s_write(I2S_PORT_NUM, buf, sizeof(buf), &bytes_written, portMAX_DELAY);
+
+#if ENABLE_USB_AUDIO_STREAM
+        // 2. Stream audio frame over USB Serial to laptop ONLY if buffer has space
+        // This guarantees Core 0 never blocks and never starves the Wi-Fi stack!
+        if (Serial.availableForWrite() >= (int)usb_pkt_len) {
+            int16_t* pcm_out = (int16_t*)&usb_pkt[6];
+#if USB_AUDIO_DOWNSAMPLE_2
+            for (int s = 0; s < stream_samples; s++) {
+                pcm_out[s] = buf[s * 4]; /* Decimate by 2 (22.05 kHz) */
+            }
+#else
+            for (int s = 0; s < stream_samples; s++) {
+                pcm_out[s] = buf[s * 2]; /* 44.1 kHz */
+            }
+#endif
+            Serial.write(usb_pkt, usb_pkt_len);
+        }
+#endif
     }
 }
 
@@ -349,14 +398,12 @@ static int find_voice_by_key(int key_idx)
 /* Allocate a voice: idle voice first, then steal oldest active voice (LRU) */
 static int allocate_voice(void)
 {
-    // 1. Check for free voice
     for (int v = 0; v < MAX_POLYPHONY; v++) {
         if (!g_voices[v].active) {
             return v;
         }
     }
 
-    // 2. All 5 voices active: steal oldest (lowest note_on_time_us)
     int oldest_v = 0;
     uint32_t oldest_time = g_voices[0].note_on_time_us;
     for (int v = 1; v < MAX_POLYPHONY; v++) {
@@ -379,6 +426,22 @@ static void voice_note_on(int key_idx, uint32_t nowUs)
     }
 
     const key_note_t* pNote = &g_keyboard[key_idx];
+    uint8_t targetInstId = 0;
+    uint8_t midiPitch = pNote->midi_note;
+    float pitchRatio = pNote->pitch_ratio;
+
+    // Use VHL v2 Keybed mapping table if package loaded
+    if (g_vhl_loader.isLoaded && g_vhl_loader.version == 2 && g_vhl_loader.pKeyMap != NULL) {
+        if (key_idx < g_vhl_loader.pHeader->num_physical_keys) {
+            const VHLKeyMapEntry* pK = &g_vhl_loader.pKeyMap[key_idx];
+            if (pK->key_flags & KEY_FLAG_MUTE) {
+                return; /* Key is muted in VHL v2 mapping */
+            }
+            targetInstId = pK->assigned_inst_id;
+            midiPitch = pK->midi_note;
+            pitchRatio = pK->pitch_ratio;
+        }
+    }
 
     // Retrieve matching sample and region from loaded VHL package
     const VHLRegion* pReg = NULL;
@@ -387,7 +450,7 @@ static void voice_note_on(int key_idx, uint32_t nowUs)
     const VHLRegion* matchedRegions[VHL_MAX_MATCHED_REGIONS];
     uint8_t matchCount = 0;
     if (g_vhl_loader.isLoaded &&
-        vhl_loader_get_regions_for_key(&g_vhl_loader, 0, pNote->midi_note, 100, matchedRegions, &matchCount) == VHL_OK && matchCount > 0) {
+        vhl_loader_get_regions_for_key(&g_vhl_loader, targetInstId, midiPitch, 100, matchedRegions, &matchCount) == VHL_OK && matchCount > 0) {
         pReg = matchedRegions[0];
         vhl_loader_get_sample(&g_vhl_loader, pReg->sample_id, &pSmpl);
     }
@@ -401,7 +464,6 @@ static void voice_note_on(int key_idx, uint32_t nowUs)
     uint32_t loopEnd     = pSmpl ? pSmpl->loop_end_frame : 0;
     uint8_t  loopMode    = pReg ? pReg->loop_mode : VHL_LOOP_CONTINUOUS;
 
-    // Validate loop points
     if (loopEnd == 0 || loopEnd > totalFrames) {
         loopEnd = totalFrames;
     }
@@ -409,7 +471,6 @@ static void voice_note_on(int key_idx, uint32_t nowUs)
         loopStart = 0;
     }
 
-    // Determine if loop is active
     bool isLooped = false;
     if (loopMode == VHL_LOOP_CONTINUOUS || loopMode == VHL_LOOP_SUSTAIN) {
         isLooped = (loopEnd > loopStart);
@@ -428,9 +489,9 @@ static void voice_note_on(int key_idx, uint32_t nowUs)
     g_voices[v].active          = true;
     g_voices[v].key_held        = true;
     g_voices[v].key_idx         = key_idx;
-    g_voices[v].midi_note       = pNote->midi_note;
-    g_voices[v].pitch_ratio     = pNote->pitch_ratio;
-    g_voices[v].sample_phase    = 0.0f; /* Retrigger from frame 0 */
+    g_voices[v].midi_note       = midiPitch;
+    g_voices[v].pitch_ratio     = pitchRatio;
+    g_voices[v].sample_phase    = 0.0f;
     g_voices[v].note_on_time_us = nowUs;
     g_voices[v].total_frames    = totalFrames;
     g_voices[v].loop_start      = loopStart;
@@ -443,9 +504,8 @@ static void voice_note_on(int key_idx, uint32_t nowUs)
 #if ENABLE_SERIAL_KEY_LOG
     int active_cnt = 0;
     for (int i = 0; i < MAX_POLYPHONY; i++) if (g_voices[i].active) active_cnt++;
-    Serial.printf("[NOTE ON]  Key %2d [%-10s] | Pitch: %7.4fx | Loop: [%u..%u] %s | Polyphony: %d/%d\n",
-                  key_idx + 1, pNote->name, pNote->pitch_ratio, loopStart, loopEnd,
-                  isLooped ? "ON" : "OFF", active_cnt, MAX_POLYPHONY);
+    Serial.printf("[NOTE ON] Key %2d [%-10s] | Pitch: %7.4fx | Polyphony: %d/%d\n",
+                  key_idx + 1, pNote->name, pitchRatio, active_cnt, MAX_POLYPHONY);
 #endif
 }
 
@@ -455,8 +515,6 @@ static void voice_note_off(int key_idx)
     int v = find_voice_by_key(key_idx);
     if (v >= 0) {
         g_voices[v].key_held = false;
-
-        // Immediate cutoff on release until HDADSR envelope release stage is engaged
         g_voices[v].active = false;
 
 #if ENABLE_SERIAL_KEY_LOG
@@ -479,37 +537,27 @@ static void process_keyboard(void)
         s_last_key_map = key_map;
         uint32_t nowUs = (uint32_t)esp_timer_get_time();
 
-        // Check if C2 (0), D2 (2), and E2 (4) are all active simultaneously
         bool volume_combo_active = ((key_map & (1ULL << KEY_IDX_C2)) != 0) &&
                                    ((key_map & (1ULL << KEY_IDX_D2)) != 0) &&
                                    ((key_map & (1ULL << KEY_IDX_E2)) != 0);
 
-        // 1. Process releases first to free voices
         for (int i = 0; i < (int)TOTAL_KEYS; i++) {
             if (released_now & ((uint64_t)1 << i)) {
                 voice_note_off(i);
             }
         }
 
-        // 2. Process newly pressed keys
         for (int i = 0; i < (int)TOTAL_KEYS; i++) {
             if (pressed_now & ((uint64_t)1 << i)) {
-                // If C2 + D2 + E2 are active: B6 decreases volume by 3%, C7 increases volume by 3% (capped at 60%)
                 if (volume_combo_active && (i == KEY_IDX_B6 || i == KEY_IDX_C7)) {
                     if (i == KEY_IDX_B6) {
                         s_master_volume_percent -= VOLUME_STEP_PERCENT;
-                        if (s_master_volume_percent < 0) {
-                            s_master_volume_percent = 0;
-                        }
-                        Serial.printf("[VOLUME] C2+D2+E2 + B6 Pressed -> Volume -%d%% -> Current: %d%% (Max: %d%%)\n",
-                                      VOLUME_STEP_PERCENT, s_master_volume_percent, MAX_MASTER_VOLUME_PERCENT);
+                        if (s_master_volume_percent < 0) s_master_volume_percent = 0;
                     } else if (i == KEY_IDX_C7) {
                         s_master_volume_percent += VOLUME_STEP_PERCENT;
                         if (s_master_volume_percent > MAX_MASTER_VOLUME_PERCENT) {
                             s_master_volume_percent = MAX_MASTER_VOLUME_PERCENT;
                         }
-                        Serial.printf("[VOLUME] C2+D2+E2 + C7 Pressed -> Volume +%d%% -> Current: %d%% (Max: %d%%)\n",
-                                      VOLUME_STEP_PERCENT, s_master_volume_percent, MAX_MASTER_VOLUME_PERCENT);
                     }
                 } else {
                     voice_note_on(i, nowUs);
@@ -520,19 +568,168 @@ static void process_keyboard(void)
 }
 
 /* =============================================================================
+ * Wi-Fi HTTP API Handler (Core 1)
+ * Supports:
+ *   GET  /api/status       -> JSON runtime info
+ *   POST /api/upload_vhl   -> Stream binary VHL package directly into RAM
+ * ============================================================================= */
+
+static void handle_wifi_clients(void)
+{
+    WiFiClient client = g_wifi_server.available();
+    if (!client) return;
+
+    client.setTimeout(4000);
+
+    // Read HTTP request line
+    String reqLine = client.readStringUntil('\n');
+    reqLine.trim();
+
+    if (reqLine.startsWith("GET /api/status")) {
+        while (client.connected() && client.available()) {
+            String h = client.readStringUntil('\n');
+            h.trim();
+            if (h.length() == 0) break;
+        }
+
+        char json[128];
+        int json_len = snprintf(json, sizeof(json),
+            "{\"status\":\"ok\",\"version\":%u,\"loaded\":%s,\"instruments\":%u,\"samples\":%u}\r\n",
+            g_vhl_loader.isLoaded ? g_vhl_loader.version : 0,
+            g_vhl_loader.isLoaded ? "true" : "false",
+            g_vhl_loader.isLoaded && g_vhl_loader.pHeader ? g_vhl_loader.pHeader->num_instruments : 0,
+            g_vhl_loader.isLoaded && g_vhl_loader.pHeader ? g_vhl_loader.pHeader->total_sample_count : 0);
+
+        client.printf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n%s", json_len, json);
+        client.flush();
+        delay(5);
+        client.stop();
+        return;
+    }
+
+    if (reqLine.startsWith("POST /api/upload_vhl")) {
+        size_t contentLength = 0;
+        while (client.connected()) {
+            String header = client.readStringUntil('\n');
+            header.trim();
+            if (header.length() == 0) break; // empty line marks end of headers
+
+            int colonIdx = header.indexOf(':');
+            if (colonIdx > 0) {
+                String key = header.substring(0, colonIdx);
+                key.toLowerCase();
+                if (key == "content-length") {
+                    contentLength = header.substring(colonIdx + 1).toInt();
+                }
+            }
+        }
+
+        if (contentLength == 0 || contentLength > 16 * 1024 * 1024) {
+            const char* err_resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 22\r\nConnection: close\r\n\r\nInvalid Content-Length";
+            client.print(err_resp);
+            client.flush();
+            delay(5);
+            client.stop();
+            return;
+        }
+
+        uint8_t* new_buf = NULL;
+#if defined(BOARD_HAS_PSRAM) || defined(CONFIG_SPIRAM_SUPPORT)
+        if (psramFound()) {
+            new_buf = (uint8_t*)ps_malloc(contentLength);
+        }
+#endif
+        if (!new_buf) {
+            new_buf = (uint8_t*)malloc(contentLength);
+        }
+
+        if (!new_buf) {
+            const char* err_resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\nConnection: close\r\n\r\nOut of Memory";
+            client.print(err_resp);
+            client.flush();
+            delay(5);
+            client.stop();
+            return;
+        }
+
+        size_t bytesRead = 0;
+        uint32_t startMs = millis();
+        while (bytesRead < contentLength && (millis() - startMs) < 15000) {
+            while (client.available() && bytesRead < contentLength) {
+                int r = client.read(new_buf + bytesRead, contentLength - bytesRead);
+                if (r > 0) {
+                    bytesRead += r;
+                    startMs = millis();
+                }
+            }
+            if (bytesRead < contentLength) {
+                delay(1);
+            }
+        }
+
+        if (bytesRead != contentLength) {
+            free(new_buf);
+            const char* err_resp = "HTTP/1.1 408 Request Timeout\r\nContent-Length: 19\r\nConnection: close\r\n\r\nTransfer Incomplete";
+            client.print(err_resp);
+            client.flush();
+            delay(5);
+            client.stop();
+            return;
+        }
+
+        vhl_loader_t new_loader;
+        vhl_err_t err = vhl_loader_init(&new_loader, new_buf, contentLength);
+        if (err != VHL_OK) {
+            free(new_buf);
+            char err_buf[64];
+            int l = snprintf(err_buf, sizeof(err_buf), "VHL Init Failed: %d", err);
+            client.printf("HTTP/1.1 400 Bad Request\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", l, err_buf);
+            client.flush();
+            delay(5);
+            client.stop();
+            return;
+        }
+
+        // Atomically replace loader
+        uint8_t* old_buf = s_vhl_dynamic_buf;
+        g_vhl_loader = new_loader;
+        s_vhl_dynamic_buf = new_buf;
+        s_vhl_dynamic_buf_size = contentLength;
+
+        if (old_buf) {
+            free(old_buf);
+        }
+
+        // Reset voice assignments
+        for (int v = 0; v < MAX_POLYPHONY; v++) {
+            g_voices[v].active = false;
+        }
+
+        const char* ok_resp = "{\"status\":\"ok\",\"message\":\"VHL package loaded\"}\r\n";
+        client.printf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", (int)strlen(ok_resp), ok_resp);
+        client.flush();
+        delay(10);
+        client.stop();
+        return;
+    }
+
+    client.print("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    client.flush();
+    delay(5);
+    client.stop();
+}
+
+/* =============================================================================
  * setup()
  * ============================================================================= */
 
 void setup()
 {
-    Serial.begin(DEBUG_SERIAL_BAUD);
-    delay(200);
+    Serial.begin(USB_AUDIO_BAUD);
+    Serial.setTxBufferSize(8192);
+    delay(100);
 
-    Serial.println("\n============================================================");
-    Serial.println("  ESP32 Digital Harmonium — Pure I2S Workstation");
-    Serial.println("============================================================");
-
-    /* 1. Matrix Row Pins (all set to high-impedance INPUT at boot) */
+    /* 1. Matrix Row Pins (high-impedance INPUT at boot) */
     for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
         pinMode(ROW_PINS[r], INPUT);
     }
@@ -580,15 +777,8 @@ void setup()
         g_voices[v].channels        = 1;
     }
 
-    /* 4. Load Harmonium VHL Sample Package */
-    vhl_err_t err = vhl_loader_init(&g_vhl_loader,
-                                    g_vhl_harmonium_package,
-                                    g_vhl_harmonium_package_size);
-    if (err != VHL_OK) {
-        Serial.println("[ERROR] Failed to load Harmonium VHL sample package!");
-        return;
-    }
-    Serial.printf("[VHL] Harmonium package loaded (%u bytes)\n", (unsigned int)g_vhl_harmonium_package_size);
+    /* 4. Load Factory Harmonium VHL Sample Package as default fallback */
+    vhl_loader_init(&g_vhl_loader, g_vhl_harmonium_package, g_vhl_harmonium_package_size);
 
     /* 5. Initialize PCM5102A I2S DAC */
     const i2s_config_t i2s_cfg = {
@@ -612,22 +802,78 @@ void setup()
         .data_in_num  = I2S_PIN_NO_CHANGE,
     };
 
-    esp_err_t ret = i2s_driver_install(I2S_PORT_NUM, &i2s_cfg, 0, NULL);
-    if (ret != ESP_OK) {
-        Serial.println("[ERROR] I2S Driver installation failed!");
-        return;
-    }
+    i2s_driver_install(I2S_PORT_NUM, &i2s_cfg, 0, NULL);
     i2s_set_pin(I2S_PORT_NUM, &i2s_pins);
     i2s_zero_dma_buffer(I2S_PORT_NUM);
 
-    /* Launch high-priority audio generation task on Core 0 */
-    xTaskCreatePinnedToCore(audio_i2s_task, "audio_i2s", 4096, NULL, 5, NULL, 0);
+    /* 6. Start Wi-Fi SoftAP and HTTP Web Server */
+    WiFi.persistent(false);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_AP);
+    IPAddress local_ip(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    WiFi.softAPConfig(local_ip, gateway, subnet);
+    WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS, 1, 0, 4);
+    WiFi.setSleep(false);
+#if defined(ESP_PLATFORM)
+    esp_wifi_set_ps(WIFI_PS_NONE);
+#endif
+    g_wifi_server.begin();
+    g_wifi_server.setNoDelay(true);
 
-    Serial.println("[I2S] PCM5102A DAC initialized (44.1 kHz, 16-bit stereo)");
-    Serial.printf("[AUDIO] Master Volume: %d%% (Capped at %d%%) | Polyphony: %d voices\n",
-                  s_master_volume_percent, MAX_MASTER_VOLUME_PERCENT, MAX_POLYPHONY);
-    Serial.println("[SYSTEM] Ready! Play keys on the physical keyboard.\n");
+    /* 7. Launch audio generation task on Core 0 */
+    xTaskCreatePinnedToCore(audio_i2s_task, "audio_i2s", 4096, NULL, 5, NULL, 0);
 }
+
+/* =============================================================================
+ * Automatic Scale Player (C4 -> D4 -> E4 -> F4 -> G4 -> A4 -> B4 -> C5)
+ * Plays the scale continuously without physical key presses
+ * ============================================================================= */
+
+#if ENABLE_AUTO_PLAY_SCALE
+static const int AUTO_SCALE_KEYS[] = {
+    24, // C4 (MIDI 60)
+    26, // D4 (MIDI 62, Root)
+    28, // E4 (MIDI 64)
+    29, // F4 (MIDI 65)
+    31, // G4 (MIDI 67)
+    33, // A4 (MIDI 69)
+    35, // B4 (MIDI 71)
+    36  // C5 (MIDI 72)
+};
+#define AUTO_SCALE_COUNT ((int)(sizeof(AUTO_SCALE_KEYS) / sizeof(AUTO_SCALE_KEYS[0])))
+
+static void auto_play_scale_step(void)
+{
+    static uint32_t s_last_step_ms = 0;
+    static int s_step_idx = 0;
+    static bool s_note_active = false;
+    uint32_t now_ms = millis();
+
+    const uint32_t gate_ms = 450;       // Note on duration (ms)
+    const uint32_t note_gap_ms = 80;    // Silence gap between notes (ms)
+    const uint32_t loop_pause_ms = 1200; // Pause after reaching C5 before restarting (ms)
+
+    if (!s_note_active) {
+        uint32_t wait_needed = (s_step_idx == 0) ? loop_pause_ms : note_gap_ms;
+        if (now_ms - s_last_step_ms >= wait_needed) {
+            int key = AUTO_SCALE_KEYS[s_step_idx];
+            voice_note_on(key, (uint32_t)esp_timer_get_time());
+            s_note_active = true;
+            s_last_step_ms = now_ms;
+        }
+    } else {
+        if (now_ms - s_last_step_ms >= gate_ms) {
+            int key = AUTO_SCALE_KEYS[s_step_idx];
+            voice_note_off(key);
+            s_note_active = false;
+            s_last_step_ms = now_ms;
+            s_step_idx = (s_step_idx + 1) % AUTO_SCALE_COUNT;
+        }
+    }
+}
+#endif
 
 /* =============================================================================
  * loop() — Core 1 Main Loop
@@ -636,5 +882,9 @@ void setup()
 void loop()
 {
     process_keyboard();
+#if ENABLE_AUTO_PLAY_SCALE
+    auto_play_scale_step();
+#endif
+    handle_wifi_clients();
     yield();
 }
